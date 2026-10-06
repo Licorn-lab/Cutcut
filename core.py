@@ -12,7 +12,9 @@ from pathlib import Path
 
 from PIL import Image, ImageOps, ImageChops
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
+# Change only when image processing or quality screening changes.
+PIPELINE_VERSION = "1.4.0"
 EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".heif"}
 MODELS = {"u2net", "u2netp", "isnet-general-use", "framed-dual"}
 
@@ -44,7 +46,7 @@ class Options:
         values = asdict(self)
         values.pop("resume")
         values.pop("recursive")
-        return hashlib.sha256(json.dumps([VERSION, values], sort_keys=True).encode()).hexdigest()
+        return hashlib.sha256(json.dumps([PIPELINE_VERSION, values], sort_keys=True).encode()).hexdigest()
 
 
 def atomic_json(path, value):
