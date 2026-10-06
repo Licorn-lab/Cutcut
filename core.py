@@ -12,12 +12,12 @@ from pathlib import Path
 
 from PIL import Image, ImageOps, ImageChops
 
-VERSION = "1.7.0"
+VERSION = "1.9.0"
 # Change only when image processing or quality screening changes.
 PIPELINE_VERSION = "1.7.0"
 EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".heif"}
-MODEL_LABELS = {"装裱刺绣保护 · 双模型": "framed-dual", "通用 · IS-Net": "isnet-general-use", "标准 · U²-Net": "u2net", "轻量试跑 · U²-Netp": "u2netp", "细节试跑 · BiRefNet": "birefnet-general"}
-MODELS = {"u2net", "u2netp", "isnet-general-use", "framed-dual", "birefnet-general"}
+MODEL_LABELS = {"自动选模 · 比较候选": "auto", "装裱刺绣保护 · 双模型": "framed-dual", "通用 · IS-Net": "isnet-general-use", "标准 · U²-Net": "u2net", "轻量试跑 · U²-Netp": "u2netp", "细节试跑 · BiRefNet": "birefnet-general"}
+MODELS = {"auto", "u2net", "u2netp", "isnet-general-use", "framed-dual", "birefnet-general"}
 
 
 class ModelPreparationError(RuntimeError):
@@ -26,7 +26,7 @@ class ModelPreparationError(RuntimeError):
 
 @dataclass(frozen=True)
 class Options:
-    model: str = "framed-dual"
+    model: str = "auto"
     layout: str = "original"
     size: int = 1500
     occupancy: float = 0.85
@@ -45,6 +45,7 @@ class Options:
 
     def signature(self):
         values = asdict(self)
+        if self.model == "auto":values["auto_revision"]="suspect-first-v1"
         values.pop("resume")
         values.pop("recursive")
         return hashlib.sha256(json.dumps([PIPELINE_VERSION, values], sort_keys=True).encode()).hexdigest()
@@ -155,6 +156,9 @@ def make_session(model):
     os.environ.setdefault("OMP_NUM_THREADS", str(min(4, os.cpu_count() or 2)))
     cache = Path.home() / "Library" / "Application Support" / "WhiteBackgroundBatch" / "models"
     os.environ.setdefault("U2NET_HOME", str(cache))
+    if model == "auto":
+        from auto_model import AutoSession
+        return AutoSession(make_session, remove_background)
     from rembg import new_session
     # Explicit local model, no cloud backend. CPU works on both Intel and Apple Silicon.
     if model == "framed-dual":
@@ -179,6 +183,8 @@ def framed_mask(masks):
 
 
 def remove_background(image, session, options):
+    if options.model == "auto":
+        return session.predict(image,options)
     from rembg import remove
     if options.model == "framed-dual":
         masks = [remove(image, session=item, only_mask=True).convert("L") for item in session]
@@ -195,7 +201,7 @@ def inspect_cutout(original, cutout, white, options):
     """Screen actual outer edges and dimensions; flags are reasons to review, not verdicts."""
     import cv2
     import numpy as np
-    warnings = []
+    warnings = list(cutout.info.get("auto_warnings", []))
     if white.size != original.size:
         warnings.append(f"尺寸变化：原图 {original.width}×{original.height}，输出 {white.width}×{white.height}")
     alpha_image = cutout.getchannel("A").copy()

@@ -82,7 +82,7 @@ class App:
         settings = ttk.LabelFrame(outer, text="02  输出设置", padding=12)
         settings.pack(fill="x", pady=14)
         ttk.Label(settings, text="抠图模型").grid(row=0, column=0, sticky="w")
-        model_box = ttk.Combobox(settings, textvariable=self.model, values=list(MODEL_LABELS), state="readonly", width=23)
+        model_box = ttk.Combobox(settings, textvariable=self.model, values=list(MODEL_LABELS), state="readonly", width=32)
         model_box.grid(row=0, column=1, sticky="w", padx=8)
         model_box.bind("<<ComboboxSelected>>", self.update_model_controls)
         ttk.Label(settings, text="白底格式").grid(row=0, column=2, sticky="w", padx=(20, 8))

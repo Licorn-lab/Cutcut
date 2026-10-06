@@ -131,7 +131,7 @@ class ReviewWindow:
             self.canvases.append(canvas)
         ttk.Label(outer,textvariable=self.state).pack(anchor='w',pady=(8,3))
         ttk.Label(outer,textvariable=self.detail,wraplength=950).pack(anchor='w')
-        ttk.Label(outer,text='套索：按住拖出轮廓，松手应用。滚动平移；⌘+滚动缓慢缩放；方向键平移；空格+拖动临时移动。右键取消选区。',foreground='#687385').pack(anchor='w',pady=5)
+        ttk.Label(outer,text='套索：按住拖出轮廓，松手应用。双指捏合缩放；双指滚动平移；⌘+滚动缓慢缩放；方向键平移；空格+拖动临时移动。右键取消选区。',foreground='#687385').pack(anchor='w',pady=5)
         remarks=ttk.Frame(outer);remarks.pack(fill='x',pady=5)
         ttk.Label(remarks,text='人工原因/备注（选填）').pack(side='left');ttk.Entry(remarks,textvariable=self.note).pack(side='left',fill='x',expand=True,padx=8)
         decisions=ttk.Frame(outer);decisions.pack(fill='x')
@@ -153,6 +153,9 @@ class ReviewWindow:
         self.window.bind('<KeyPress-space>',lambda e:self.space_key(e,True))
         self.window.bind('<KeyRelease-space>',lambda e:self.space_key(e,False))
         self.window.bind('<FocusOut>',lambda e:setattr(self,'space_pan',False))
+        from gestures import PinchBridge
+        self.pinch=PinchBridge(self.window,self.canvases,self.pinch_zoom)
+        ttk.Label(outer,text=self.pinch.status,foreground='#687385').pack(anchor='w')
         self.refresh();self.window.after(100,self.poll)
 
     def refresh(self):
@@ -194,7 +197,7 @@ class ReviewWindow:
         self.row=row;self.generation+=1;self.images={};self.engine=None;self.dirty=False;self.points=[]
         self.note.set(row.get('human',''))
         self.retry_model.set(next((label for label,model in MODEL_LABELS.items() if model==row['options']['model']),next(iter(MODEL_LABELS))))
-        self.state.set('正在载入…');self.detail.set('自动提示：'+(row.get('automatic') or '未触发规则，仍需人工确认。')+('；错误：'+row['error'] if row.get('error') else ''))
+        self.state.set('正在载入…');self.detail.set(self.routing_text(row)+'自动提示：'+(row.get('automatic') or '未触发规则，仍需人工确认。')+('；错误：'+row['error'] if row.get('error') else ''))
         self.schedule_render()
         def load():
             if row.get('mask'):
@@ -204,6 +207,12 @@ class ReviewWindow:
             except Exception:original=None
             return original,None,None
         self.submit('load',load)
+
+    @staticmethod
+    def routing_text(row):
+        route=row.get("routing")
+        if not route:return ""
+        return "自动选模："+route["selected"]+" · "+route["reason"]+"\n"
 
     def poll(self):
         try:
@@ -367,7 +376,7 @@ class ReviewWindow:
                 cutout=remove_background(original,session,options);mask=ImageChops.multiply(cutout.getchannel('A'),original.getchannel('A'))
                 cutout=original.copy();cutout.putalpha(mask);white,_=render_white(cutout,options)
                 if digest(path)!=source_hash:raise ValueError('原图在处理期间改变')
-                return self.store.finish(current,mask,'；'.join(inspect_cutout(original,cutout,white,options)))
+                return self.store.finish(current,mask,'；'.join(inspect_cutout(original,cutout,white,options)),cutout.info.get('routing'))
             except Exception as exc:return self.store.fail(current,str(exc))
 
     def discard_selection(self):
@@ -387,6 +396,9 @@ class ReviewWindow:
         if not self.images:return
         width=max(im.width for im in self.images.values());height=max(im.height for im in self.images.values())
         self.center=(width/2,height/2);self.set_zoom(min(min(max(1,c.winfo_width())/width,max(1,c.winfo_height())/height) for c in self.canvases))
+
+    def pinch_zoom(self,factor,canvas,x,y):
+        self.set_zoom(self.zoom*factor,(x,y,canvas.winfo_width(),canvas.winfo_height()))
 
     def set_zoom(self,zoom,anchor=None):
         new=max(.005,min(8,zoom))
@@ -472,7 +484,15 @@ class ExportPreview:
         for key,dx,dy in [('Left',-40,0),('Right',40,0),('Up',0,-40),('Down',0,40)]:
             self.window.bind('<'+key+'>',lambda e,x=dx,y=dy:self.preview_pan(x,y))
         self.canvas.bind('<ButtonPress-1>',self.press);self.canvas.bind('<B1-Motion>',self.drag)
+        from gestures import PinchBridge
+        self.pinch=PinchBridge(self.window,[self.canvas],self.pinch_zoom)
         self.window.after(100,self.fit)
+    def pinch_zoom(self,factor,canvas,x,y):
+        new=max(.005,min(8,self.zoom*factor))
+        dx=x-canvas.winfo_width()/2;dy=y-canvas.winfo_height()/2
+        self.center=(self.center[0]+dx/self.zoom-dx/new,self.center[1]+dy/self.zoom-dy/new)
+        self.scale(new)
+
     def fit(self):
         self.center=(self.image.width/2,self.image.height/2)
         self.scale(min(max(1,self.canvas.winfo_width())/self.image.width,max(1,self.canvas.winfo_height())/self.image.height))

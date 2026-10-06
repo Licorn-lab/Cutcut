@@ -10,3 +10,5 @@ pymatting==1.1.14
 pooch==1.8.2
 jsonschema==4.25.1
 tqdm==4.67.1
+pyobjc-core==12.2.2; sys_platform == "darwin"
+pyobjc-framework-Cocoa==12.2.2; sys_platform == "darwin"

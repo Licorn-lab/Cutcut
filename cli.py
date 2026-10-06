@@ -6,7 +6,7 @@ def main():
     parser = argparse.ArgumentParser(description="Mac 本地批量生成候选；需要图形界面人工审核后导出")
     parser.add_argument("input", help="原图文件夹")
     parser.add_argument("output", help="输出文件夹")
-    parser.add_argument("--model", choices=["u2net", "u2netp", "isnet-general-use", "framed-dual", "birefnet-general"], default="framed-dual", help="默认双模型装裱保护；普通物品可选 isnet-general-use")
+    parser.add_argument("--model", choices=["auto", "u2net", "u2netp", "isnet-general-use", "framed-dual", "birefnet-general"], default="auto", help="默认自动比较候选；可手动指定模型")
     parser.add_argument("--size", type=int, default=1500)
     parser.add_argument("--occupancy", type=float, default=0.85)
     parser.add_argument("--original-size", action="store_true")

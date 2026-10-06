@@ -50,6 +50,31 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(seen,['birefnet-general'])
         self.job(options=Options(model='u2netp'));self.assertEqual(self.row()['options']['model'],'u2netp')
         self.assertFalse(self.row().get('override_base'))
+    def test_export_name_keeps_input_stem_plus_w(self):
+        self.photo('照片 1479.jpg');self.photo('DSC_6952.png');self.job();store=BatchStore(self.output)
+        for key,expected in [('照片 1479.jpg','照片 1479w.jpg'),('DSC_6952.png','DSC_6952w.jpg')]:
+            row=store.get(key);row=store.decide(key,row['revision'],'approved','')
+            self.assertEqual(Path(row['export']).name,expected)
+            row=store.decide(key,row['revision'],'redo','');self.assertEqual(Path(row['export']).name,expected)
+    def test_same_stem_different_extensions_block_without_overwrite(self):
+        self.photo('同名.jpg');self.photo('同名.png');self.job();store=BatchStore(self.output)
+        for key in ['同名.jpg','同名.png']:
+            row=store.get(key)
+            with self.assertRaisesRegex(ValueError,'命名冲突'):store.decide(key,row['revision'],'approved','')
+            self.assertEqual(store.get(key)['status'],'pending')
+        self.assertFalse(list(self.output.rglob('同名w.jpg')))
+    def test_same_stem_in_different_folders_is_allowed(self):
+        self.photo('甲/a.jpg');self.photo('乙/a.png');self.job();store=BatchStore(self.output)
+        for key in ['甲/a.jpg','乙/a.png']:
+            row=store.get(key);row=store.decide(key,row['revision'],'approved','')
+            self.assertEqual(Path(row['export']).name,'aw.jpg');self.assertTrue((self.output/row['export']).exists())
+    def test_existing_owned_old_name_changes_on_reconfirmation(self):
+        self.job();store=BatchStore(self.output);row=self.approve();target=self.output/row['export']
+        old=target.with_name('样图.png.white.jpg');target.rename(old)
+        row['export']=old.relative_to(self.output).as_posix()
+        with store.locked() as c:store._put(c,row)
+        row=store.decide(row['source'],row['revision'],'approved','')
+        self.assertFalse(old.exists());self.assertEqual(Path(row['export']).name,'样图w.jpg')
     def test_every_image_pending_and_nothing_exported(self):
         original=digest(self.source/'子目录/样图.png');result=self.job();row=self.row()
         self.assertEqual(row['status'],'pending');self.assertEqual(result['auto_pass'],0)

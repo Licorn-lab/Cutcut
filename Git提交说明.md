@@ -1,15 +1,13 @@
-# 在原Git项目中提交v1.7
+# 保存v1.9更新
 
-先关闭工具，将新版文件覆盖原项目相应文件；说明和tests也可复制。保留原来的.git、.gitignore、.venv，不要再次git init。
-
-在VS Code打开原项目，在终端执行：
+在原项目覆盖core.py、auto_model.py、workflow.py，说明和tests可一起复制。VS Code原项目终端执行：
 
 ```bash
 git status
 git diff --stat
-git add core.py app.py cli.py workflow.py editor.py 使用说明.md 更新说明.md 验证记录.md Git提交说明.md tests/test_workflow.py
-git commit -m "升级v1.7：套索编辑、平移缩放及可选BiRefNet"
+git add core.py auto_model.py workflow.py 使用说明.md 更新说明.md 验证记录.md Git提交说明.md tests/
+git commit -m "升级v1.9：可疑时换模型与原名加w导出"
 git status
 ```
 
-提交保存本机代码版本。原图、输出、模型与审核进度不提交；Git不自动备份这些数据。
+若之前v1.8文件也尚未提交，先将这些代码更新一起暂存。保留.git；不要提交原图、输出、运行环境、模型或审核缓存。

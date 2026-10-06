@@ -8,11 +8,12 @@ import sqlite3
 import tempfile
 import threading
 import uuid
+import unicodedata
 from contextlib import contextmanager
 from pathlib import Path
 from PIL import Image, ImageChops
 from core import (Options, VERSION, batch_cache, collect_images, digest, load_image,
-                  make_session, remove_background, render_white, inspect_cutout, save_image_atomic)
+                  EXTENSIONS, make_session, remove_background, render_white, inspect_cutout, save_image_atomic)
 
 STATUSES = {'pending':'待审核','editing':'编辑中','approved':'已通过','redo':'待重制','failed':'处理失败','processing':'正在处理'}
 
@@ -189,12 +190,12 @@ class BatchStore:
             self._put(c,row);c.commit();self._report(c);self._gc(c)
             return row
 
-    def finish(self, row, mask, automatic):
+    def finish(self, row, mask, automatic, routing=None):
         with self.locked() as c:
             current = self._get(c,row['source']); self._assert_revision(current,row['revision'])
             name,checksum=self._write_mask(mask)
             current.update(mask=name,mask_hash=checksum,base_mask=name,base_hash=checksum,
-                           status='pending',automatic=automatic,error='')
+                           status='pending',automatic=automatic,error='',routing=routing)
             self._put(c,current);c.commit();self._report(c);self._gc(c)
             return current
 
@@ -254,6 +255,16 @@ class BatchStore:
         canvas=Image.new('RGBA',original.size,'white');canvas.alpha_composite(cutout)
         return original,canvas.convert('RGB')
 
+    def _export_filename(self,key):
+        path=Path(key)
+        folded=lambda text:unicodedata.normalize('NFC',text).casefold()
+        parent=safe_path(self.source,key).parent
+        conflicts=[other.name for other in parent.iterdir() if other.is_file()
+                   and other.suffix.lower() in EXTENSIONS and other.name!=path.name
+                   and folded(other.stem)==folded(path.stem)]
+        if conflicts:raise ValueError('导出命名冲突：'+path.name+' 与 '+ '、'.join(conflicts)+' 同名。请先为原图设置不同文件名，再生成并审核；不会覆盖。')
+        return path.stem+'w.jpg'
+
     def decide(self, key, revision, decision, human):
         if decision not in {'approved','redo'}:raise ValueError('审核决定无效')
         with self.locked() as c:
@@ -269,7 +280,7 @@ class BatchStore:
                 else:
                     white=Image.new('RGBA',original.size,'white');white.alpha_composite(cutout);white=white.convert('RGB')
                 folder='白底图' if decision=='approved' else '待重制'
-                export=(Path(folder)/Path(key).parent/(Path(key).name+'.white.jpg')).as_posix()
+                export=(Path(folder)/Path(key).parent/self._export_filename(key)).as_posix()
                 target=safe_path(self.destination,export)
                 if target.exists() and (row.get('export')!=export or digest(target)!=row.get('export_hash')):
                     raise ValueError('目标位置已有非本次生成或被修改的文件，请移走后再导出')
@@ -346,11 +357,13 @@ def run_batch(source,destination,options=None,emit=None,cancel=None,session_fact
                     cutout=remover(original,session,effective)
                     if cutout.size!=original.size:raise ValueError('模型返回尺寸与原图不一致')
                     mask=ImageChops.multiply(cutout.getchannel('A'),original.getchannel('A'))
+                    inference_info=cutout.info
                     cutout=original.copy();cutout.putalpha(mask)
+                    cutout.info.update({k:inference_info[k] for k in ('routing','auto_warnings') if k in inference_info})
                     white,_=render_white(cutout,effective)
                     warnings=inspect_cutout(original,cutout,white,effective)
                     if digest(path)!=source_hash:raise ValueError('原图在处理期间改变，请重试')
-                    row=store.finish(row,mask,'；'.join(warnings));stats['success']+=1
+                    row=store.finish(row,mask,'；'.join(warnings),cutout.info.get('routing'));stats['success']+=1
                 except RuntimeError as exc:
                     if str(exc).startswith('模型准备失败，停止批次'):raise
                     row=store.fail(row,f'{type(exc).__name__}: {exc}');stats['failed']+=1
