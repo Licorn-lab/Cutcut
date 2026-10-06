@@ -3,10 +3,10 @@ import argparse
 from core import Options, run_batch
 
 def main():
-    parser = argparse.ArgumentParser(description="Mac 本地批量抠图与白底输出")
+    parser = argparse.ArgumentParser(description="Mac 本地批量生成候选；需要图形界面人工审核后导出")
     parser.add_argument("input", help="原图文件夹")
     parser.add_argument("output", help="输出文件夹")
-    parser.add_argument("--model", choices=["u2net", "u2netp", "isnet-general-use", "framed-dual"], default="framed-dual", help="默认双模型装裱保护；普通物品可选 isnet-general-use")
+    parser.add_argument("--model", choices=["u2net", "u2netp", "isnet-general-use", "framed-dual", "birefnet-general"], default="framed-dual", help="默认双模型装裱保护；普通物品可选 isnet-general-use")
     parser.add_argument("--size", type=int, default=1500)
     parser.add_argument("--occupancy", type=float, default=0.85)
     parser.add_argument("--original-size", action="store_true")
@@ -18,6 +18,8 @@ def main():
     parser.add_argument("--no-resume", action="store_true")
     parser.add_argument("--matting", action="store_true")
     args = parser.parse_args()
+    if args.png:
+        parser.error("人工审核版只导出 JPG，请去掉 --png")
     options = Options(model=args.model, size=args.size, occupancy=args.occupancy,
                       layout="square" if args.square and not args.original_size else "original", white_format="png" if args.png else "jpg",
                       recursive=not args.no_recursive,

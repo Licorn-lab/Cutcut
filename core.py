@@ -12,11 +12,12 @@ from pathlib import Path
 
 from PIL import Image, ImageOps, ImageChops
 
-VERSION = "1.5.0"
+VERSION = "1.7.0"
 # Change only when image processing or quality screening changes.
-PIPELINE_VERSION = "1.4.0"
+PIPELINE_VERSION = "1.7.0"
 EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".heif"}
-MODELS = {"u2net", "u2netp", "isnet-general-use", "framed-dual"}
+MODEL_LABELS = {"装裱刺绣保护 · 双模型": "framed-dual", "通用 · IS-Net": "isnet-general-use", "标准 · U²-Net": "u2net", "轻量试跑 · U²-Netp": "u2netp", "细节试跑 · BiRefNet": "birefnet-general"}
+MODELS = {"u2net", "u2netp", "isnet-general-use", "framed-dual", "birefnet-general"}
 
 
 class ModelPreparationError(RuntimeError):
@@ -267,176 +268,7 @@ def batch_cache(destination):
     return base / "batches" / key
 
 
-def write_reports(destination, rows):
-    """Export just suspicious/failed items; resume state stays in the internal cache."""
-    report_root = destination / "待人工复核"
-    report_root.mkdir(parents=True, exist_ok=True)
-    pending = [r for r in rows if r.get("quality") != "自动检查通过（需抽查）"]
-    columns = ("source", "status", "note", "white")
-    headers = ["原图相对路径", "处理状态", "复核原因或错误", "可疑图片路径（相对输出位置）"]
-    fd, tmp = tempfile.mkstemp(prefix=".report-", dir=report_root)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8-sig", newline="") as stream:
-            writer = csv.writer(stream)
-            writer.writerow(headers)
-            for row in pending:
-                writer.writerow([row.get(k, "") for k in columns])
-        os.replace(tmp, report_root / "复核原因.csv")
-    finally:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-
-
 def run_batch(source, destination, options=None, emit=None, cancel=None,
               session_factory=make_session, remover=remove_background):
-    options = options or Options()
-    options.validate()
-    emit = emit or (lambda event, value: None)
-    cancel = cancel or threading.Event()
-    source, destination = Path(source).resolve(), Path(destination).resolve()
-    images = collect_images(source, destination, options.recursive)
-    if not images:
-        raise ValueError("文件夹中没有支持的静态图片")
-    destination.mkdir(parents=True, exist_ok=True)
-    allowed = {"白底图", "待人工复核"}
-    unexpected = [p.name for p in destination.iterdir() if p.name != ".DS_Store" and
-                  (p.name not in allowed or not p.is_dir() or p.is_symlink())]
-    if unexpected:
-        raise ValueError("输出位置含旧版文件或其他内容。为只保留两个文件夹，请选择新的空输出文件夹。")
-    legacy_reports = {"处理清单.csv", "待人工复核.csv", "结果检查.html", "待人工复核.html"}
-    if any((destination / "待人工复核" / name).exists() for name in legacy_reports):
-        raise ValueError("待人工复核内含旧版清单或检查页。请选择新的空输出文件夹，旧文件不会删除。")
-    cache = batch_cache(destination)
-    cache.mkdir(parents=True, exist_ok=True)
-    state_path = cache / "续跑记录.json"
-    import fcntl
-    lock = (cache / "batch.lock").open("a+")
-    try:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise ValueError("这个输出文件夹正在被另一个批处理使用") from exc
-        try:
-            state = json.loads(state_path.read_text(encoding="utf-8"))
-            if state.get("source_root") != str(source):
-                raise ValueError("该输出位置已有另一批原图的记录，请选择新的输出文件夹")
-            if not isinstance(state.get("files"), dict):
-                raise ValueError("续跑记录格式错误，请选择新的输出文件夹")
-        except FileNotFoundError:
-            if any(p.suffix.lower() in EXTENSIONS for folder in allowed
-                   if (destination / folder).is_dir() for p in (destination / folder).rglob("*")):
-                raise ValueError("该输出位置已有图片，但续跑记录不可用，请选择新的空输出文件夹。")
-            state = {"version": VERSION, "source_root": str(source), "files": {}}
-        except json.JSONDecodeError as exc:
-            raise ValueError("续跑记录损坏，请选择新的输出文件夹，旧结果仍可使用") from exc
-        for folder in allowed:
-            (destination / folder).mkdir(exist_ok=True)
-        rows, session = [], None
-        stats = {"success": 0, "skipped": 0, "failed": 0, "review": 0, "auto_pass": 0, "total": len(images), "cancelled": False}
-        emit("total", len(images))
-        config = options.signature()
-        state["version"] = VERSION
-        state["options"] = asdict(options)
-        atomic_json(state_path, state)
-        for index, path in enumerate(images, 1):
-            if cancel.is_set():
-                stats["cancelled"] = True
-                break
-            rel = path.relative_to(source)
-            key = rel.as_posix()
-            row = {"source": key, "status": "失败", "quality": "处理失败，需人工处理", "note": ""}
-            white_rel = None
-            try:
-                emit("status", f"{index}/{len(images)} · {key}")
-                source_hash = digest(path)
-                previous = state["files"].get(key, {})
-                files = previous.get("outputs", {})
-                resume_ok = (options.resume and previous.get("config") == config
-                             and previous.get("source_hash") == source_hash and files
-                             and all((destination / name).is_file() and digest(destination / name) == value
-                                     for name, value in files.items()))
-                if resume_ok:
-                    row = {**previous["row"], "status": "跳过（已完成）"}
-                    stats["skipped"] += 1
-                else:
-                    if session is None:
-                        emit("status", "正在准备本地模型，首次使用需要联网下载，请查看启动终端的进度")
-                        try:
-                            session = session_factory(options.model)
-                        except Exception as exc:
-                            raise ModelPreparationError(str(exc)) from exc
-                    if cancel.is_set():
-                        stats["cancelled"] = True
-                        break
-                    emit("status", f"{index}/{len(images)} · 正在抠图：{key}")
-                    original = load_image(path)
-                    cutout = remover(original, session, options)
-                    if cutout.size != original.size:
-                        raise ValueError("模型返回的尺寸与原图不一致")
-                    alpha = ImageChops.multiply(cutout.getchannel("A"), original.getchannel("A"))
-                    cutout = original.copy()
-                    cutout.putalpha(alpha)
-                    white, warnings = render_white(cutout, options)
-                    warnings = list(dict.fromkeys(warnings + inspect_cutout(original, cutout, white, options)))
-                    needs_review = bool(warnings)
-                    white_folder = Path("待人工复核") if needs_review else Path("白底图")
-                    white_rel = white_folder / rel.parent / (rel.name + ".white." + options.white_format)
-                    save_image_atomic(white, destination / white_rel,
-                                      "JPEG" if options.white_format == "jpg" else "PNG",
-                                      **({"quality": 100, "subsampling": 0} if options.white_format == "jpg" else {}))
-                    with Image.open(destination / white_rel) as saved:
-                        saved.load()
-                        if saved.size != white.size:
-                            warnings.append(f"保存后尺寸异常：原图 {original.width}×{original.height}，文件 {saved.width}×{saved.height}")
-                            needs_review = True
-                            white = saved.convert("RGB")
-                    if needs_review and white_rel.parts[0] != "待人工复核":
-                        review_rel = Path("待人工复核") / rel.parent / white_rel.name
-                        (destination / review_rel).parent.mkdir(parents=True, exist_ok=True)
-                        os.replace(destination / white_rel, destination / review_rel)
-                        white_rel = review_rel
-                    old_name = previous.get("row", {}).get("white")
-                    if old_name and old_name != white_rel.as_posix():
-                        old_path = destination / old_name
-                        known_hash = previous.get("outputs", {}).get(old_name)
-                        if (old_path.resolve().is_relative_to(destination) and old_path.is_file()
-                                and known_hash and digest(old_path) == known_hash):
-                            old_path.unlink()
-                    outputs = [white_rel]
-                    row = {"source": key, "status": "完成", "quality": "待人工复核" if needs_review else "自动检查通过（需抽查）", "note": "；".join(warnings),
-                           "white": white_rel.as_posix()}
-                    state["files"][key] = {"config": config, "source_hash": source_hash,
-                                           "outputs": {p.as_posix(): digest(destination / p) for p in outputs}, "row": row}
-                    atomic_json(state_path, state)
-                    stats["success"] += 1
-            except Exception as exc:
-                row["note"] = f"{type(exc).__name__}: {exc}"
-                if white_rel is not None and (destination / white_rel).is_file():
-                    review_rel = Path("待人工复核") / rel.parent / white_rel.name
-                    if review_rel != white_rel:
-                        (destination / review_rel).parent.mkdir(parents=True, exist_ok=True)
-                        os.replace(destination / white_rel, destination / review_rel)
-                    row["white"] = review_rel.as_posix()
-                stats["failed"] += 1
-                emit("log", f"失败：{key} · {row['note']}")
-                # A model initialization/download failure affects all images; report once and stop.
-                if isinstance(exc, ModelPreparationError):
-                    stats["review"] += 1
-                    rows.append(row)
-                    write_reports(destination, rows)
-                    raise RuntimeError("模型准备失败。请检查网络、磁盘空间及启动终端的错误；重新运行可继续。") from exc
-            if row.get("quality") == "自动检查通过（需抽查）":
-                stats["auto_pass"] += 1
-            else:
-                stats["review"] += 1
-            rows.append(row)
-            if index == 1 or index % 20 == 0:
-                write_reports(destination, rows)
-            emit("progress", index)
-            emit("row", row)
-        write_reports(destination, rows)
-        emit("done", stats)
-        return stats
-    finally:
-        fcntl.flock(lock, fcntl.LOCK_UN)
-        lock.close()
+    from workflow import run_batch as human_batch
+    return human_batch(source, destination, options, emit, cancel, session_factory, remover)
