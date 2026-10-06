@@ -1,5 +1,7 @@
-"""Mac app-local NSEvent magnify adapter; no global input monitoring."""
+"""Opt-in native pinch. Cocoa callbacks only queue data; Tk polls on its own loop."""
+from collections import deque
 import math
+import os
 import sys
 
 
@@ -10,44 +12,45 @@ def pinch_factor(amount):
 class PinchBridge:
     def __init__(self,window,canvases,callback):
         self.window=window;self.canvases=canvases;self.callback=callback
-        self.monitor=None;self.job=None;self.amount=0.;self.anchor=None;self.closed=False
-        self.status='双指捏合：仅Mac支持；⌘+滚动也可缩放。'
+        self.monitor=None;self.job=None;self.closed=False;self.pending=deque(maxlen=128)
+        self.status='缩放：⌘+滚动；原生捏合已关闭，双指滚动仍平移。'
         window.bind('<Destroy>',self.destroy,add='+')
-        if sys.platform!='darwin':return
+        # Stable default avoids entering the native bridge on affected Mac/Tk builds.
+        if sys.platform!='darwin' or os.environ.get('WHITEBG_NATIVE_PINCH')!='1':return
         try:
             from AppKit import NSEvent,NSEventMaskMagnify
-            self.NSEvent=NSEvent
-            self.handler=self.handle
+            self.NSEvent=NSEvent;self.handler=self.handle
             self.monitor=NSEvent.addLocalMonitorForEventsMatchingMask_handler_(NSEventMaskMagnify,self.handler)
-            if self.monitor is None:raise RuntimeError('无法建立本应用手势监听')
-            self.status='双指捏合已启用：张开放大、合拢缩小；双指滚动仍用于平移。'
+            if self.monitor is None:raise RuntimeError('无法建立手势监听')
+            self.job=window.after(40,self.flush)
+            self.status='原生捏合测试模式：实机兼容性未确认；若退出请改用正常启动。'
         except Exception as error:
-            self.status='双指捏合未启用：请运行 升级组件.command；暂用⌘+滚动。'
+            if self.monitor is not None:self.NSEvent.removeMonitor_(self.monitor);self.monitor=None
+            self.status='双指捏合未启用；暂用⌘+滚动。'
             print('Mac捏合组件未启用：'+str(error),flush=True)
     def handle(self,event):
-        if self.closed:return event
-        try:
-            px,py=self.window.winfo_pointerxy()
-            canvas=self.window.winfo_containing(px,py)
-            if canvas not in self.canvases:return event
-            delta=float(event.magnification())
-            if not math.isfinite(delta):return event
-            # Native values are relative changes, not scroll deltas.
-            self.amount+=math.log(max(.1,1+delta))
-            self.anchor=(canvas,px-canvas.winfo_rootx(),py-canvas.winfo_rooty())
-            if self.job is None:self.job=self.window.after(40,self.flush)
-            return None
-        except Exception as error:
-            print('捏合事件未处理：'+str(error),flush=True)
-            return event
+        # Do not call winfo, after, drawing, or any Tk operation from Cocoa.
+        if not self.closed:
+            try:
+                delta=float(event.magnification())
+                if math.isfinite(delta):self.pending.append(math.log(max(.1,1+delta)))
+            except Exception as error:print('捏合事件未读取：'+str(error),flush=True)
+        return event
     def flush(self):
-        self.job=None;amount=self.amount;self.amount=0
-        if not self.closed and self.anchor:
-            self.callback(pinch_factor(amount),*self.anchor)
+        self.job=None
+        if self.closed:return
+        amount=0.
+        while self.pending:amount+=self.pending.popleft()
+        try:
+            if amount:
+                px,py=self.window.winfo_pointerxy()
+                canvas=self.window.winfo_containing(px,py)
+                if canvas in self.canvases:
+                    self.callback(pinch_factor(amount),canvas,px-canvas.winfo_rootx(),py-canvas.winfo_rooty())
+        except Exception as error:print('Tk缩放未完成：'+str(error),flush=True)
+        if not self.closed:self.job=self.window.after(40,self.flush)
     def destroy(self,event):
         if event.widget is not self.window:return
-        self.closed=True
-        if self.job is not None:
-            self.window.after_cancel(self.job);self.job=None
-        if self.monitor is not None:
-            self.NSEvent.removeMonitor_(self.monitor);self.monitor=None
+        self.closed=True;self.pending.clear()
+        if self.job is not None:self.window.after_cancel(self.job);self.job=None
+        if self.monitor is not None:self.NSEvent.removeMonitor_(self.monitor);self.monitor=None

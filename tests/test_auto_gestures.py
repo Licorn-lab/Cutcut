@@ -75,28 +75,38 @@ class GestureTests(unittest.TestCase):
         self.window=FakeWindow(self.canvas);self.calls=[];self.removed=[]
         self.events=SimpleNamespace(addLocalMonitorForEventsMatchingMask_handler_=lambda mask,fn:'monitor',removeMonitor_=self.removed.append)
         appkit=SimpleNamespace(NSEvent=self.events,NSEventMaskMagnify=1)
-        with patch('gestures.sys.platform','darwin'),patch.dict(sys.modules,{'AppKit':appkit}):
+        with patch('gestures.sys.platform','darwin'),patch.dict('gestures.os.environ',{'WHITEBG_NATIVE_PINCH':'1'}),patch.dict(sys.modules,{'AppKit':appkit}):
             self.bridge=PinchBridge(self.window,[self.canvas],lambda *args:self.calls.append(args))
         return self.bridge
+    def test_native_callback_never_touches_tk(self):
+        bridge=self.make_bridge()
+        with patch.object(self.window,'winfo_pointerxy',side_effect=AssertionError('Tk reentry')),patch.object(self.window,'after',side_effect=AssertionError('Tk reentry')):
+            event=SimpleNamespace(magnification=lambda:.02)
+            self.assertIs(bridge.handle(event),event);self.assertEqual(len(bridge.pending),1)
+        bridge.flush();self.assertEqual(len(self.calls),1)
+    def test_default_never_loads_native_bridge(self):
+        with patch('gestures.sys.platform','darwin'),patch.dict('gestures.os.environ',{'WHITEBG_NATIVE_PINCH':'0'}),patch.dict(sys.modules,{'AppKit':None}):
+            bridge=PinchBridge(FakeWindow(object()),[],lambda *args:None)
+            self.assertIsNone(bridge.monitor);self.assertIsNone(bridge.job);self.assertIn('已关闭',bridge.status)
     def test_pinch_direction_limit_and_coalescing(self):
         bridge=self.make_bridge();event=SimpleNamespace(magnification=lambda:.1)
-        self.assertIsNone(bridge.handle(event));bridge.handle(event)
+        self.assertIs(bridge.handle(event),event);bridge.handle(event)
         self.assertEqual(len(self.window.jobs),1);bridge.flush()
         self.assertAlmostEqual(self.calls[0][0],1.06);self.assertEqual(self.calls[0][2:],(90,60))
         bridge.handle(SimpleNamespace(magnification=lambda:-.02));bridge.flush();self.assertLess(self.calls[-1][0],1)
         self.assertAlmostEqual(pinch_factor(100)*pinch_factor(-100),1)
     def test_outside_canvas_and_invalid_event_not_consumed(self):
         bridge=self.make_bridge();event=SimpleNamespace(magnification=lambda:.1)
-        self.window.canvas=object();self.assertIs(bridge.handle(event),event)
+        self.window.canvas=object();self.assertIs(bridge.handle(event),event);self.window.jobs.clear();bridge.flush();self.assertFalse(self.calls)
         self.window.canvas=self.canvas;bad=SimpleNamespace(magnification=lambda:math.nan)
-        self.assertIs(bridge.handle(bad),bad);self.assertFalse(self.window.jobs)
+        self.assertIs(bridge.handle(bad),bad);self.assertEqual(len(self.window.jobs),1);bridge.flush();self.assertFalse(self.calls)
     def test_destroy_unregisters_monitor_and_cancels_timer(self):
         bridge=self.make_bridge();bridge.handle(SimpleNamespace(magnification=lambda:.1))
         bridge.destroy(SimpleNamespace(widget=object()));self.assertFalse(bridge.closed)
         bridge.destroy(SimpleNamespace(widget=self.window));self.assertTrue(bridge.closed)
         self.assertEqual(self.removed,['monitor']);self.assertFalse(self.window.jobs)
     def test_missing_component_keeps_window_usable(self):
-        with patch('gestures.sys.platform','darwin'),patch.dict(sys.modules,{'AppKit':None}):
+        with patch('gestures.sys.platform','darwin'),patch.dict('gestures.os.environ',{'WHITEBG_NATIVE_PINCH':'1'}),patch.dict(sys.modules,{'AppKit':None}):
             canvas=object();bridge=PinchBridge(FakeWindow(canvas),[canvas],lambda *args:None)
             self.assertIn('未启用',bridge.status);self.assertIsNone(bridge.monitor)
 

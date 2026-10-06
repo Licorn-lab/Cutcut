@@ -131,7 +131,7 @@ class ReviewWindow:
             self.canvases.append(canvas)
         ttk.Label(outer,textvariable=self.state).pack(anchor='w',pady=(8,3))
         ttk.Label(outer,textvariable=self.detail,wraplength=950).pack(anchor='w')
-        ttk.Label(outer,text='套索：按住拖出轮廓，松手应用。双指捏合缩放；双指滚动平移；⌘+滚动缓慢缩放；方向键平移；空格+拖动临时移动。右键取消选区。',foreground='#687385').pack(anchor='w',pady=5)
+        ttk.Label(outer,text='套索：按住拖出轮廓，松手应用。⌘+滚动缩放；双指滚动平移；⌘+滚动缓慢缩放；方向键平移；空格+拖动临时移动。右键取消选区。',foreground='#687385').pack(anchor='w',pady=5)
         remarks=ttk.Frame(outer);remarks.pack(fill='x',pady=5)
         ttk.Label(remarks,text='人工原因/备注（选填）').pack(side='left');ttk.Entry(remarks,textvariable=self.note).pack(side='left',fill='x',expand=True,padx=8)
         decisions=ttk.Frame(outer);decisions.pack(fill='x')
