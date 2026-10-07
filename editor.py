@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import sys
 import queue
+import threading
 from concurrent.futures import ThreadPoolExecutor
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -35,6 +36,18 @@ def wheel_zoom_factor(units):
 
 def text_input(widget):
     return widget.winfo_class() in {'Entry','TEntry','Spinbox','TSpinbox','TCombobox','Text','Listbox'}
+
+
+def review_target(old_keys,new_keys,current,advance=False):
+    available=set(new_keys)
+    if not advance and current in available:return current
+    order=list(dict.fromkeys(old_keys+new_keys))
+    if current in order:
+        index=order.index(current)
+        order=order[index+1:]+order[:index]
+    for key in order:
+        if key in available:return key
+    return None
 
 
 class MaskEditor:
@@ -93,7 +106,7 @@ class ReviewWindow:
         outer=ttk.Frame(self.window,padding=12);outer.pack(fill='both',expand=True)
         navigation=ttk.Frame(outer);navigation.pack(fill='x')
         combo=ttk.Combobox(navigation,textvariable=self.filter,values=['待审核/编辑中/失败','全部','待重制','已通过'],state='readonly',width=20)
-        combo.pack(side='left');combo.bind('<<ComboboxSelected>>',lambda e:self.refresh())
+        combo.pack(side='left');combo.bind('<<ComboboxSelected>>',lambda e:self.refresh(reset=True))
         for label,command in [('刷新',self.refresh),('上一张',lambda:self.navigate(-1)),('下一张',lambda:self.navigate(1)),('适应窗口',self.fit),('100%',lambda:self.set_zoom(1)),('－',lambda:self.set_zoom(self.zoom/1.1)),('＋',lambda:self.set_zoom(self.zoom*1.1))]:
             ttk.Button(navigation,text=label,command=command).pack(side='left',padx=3)
         ttk.Label(navigation,textvariable=self.position).pack(side='right')
@@ -141,10 +154,14 @@ class ReviewWindow:
         self.preview_button=ttk.Button(decisions,text='导出布局预览',command=self.preview_export);self.preview_button.pack(side='left',padx=4)
         retrybar=ttk.Frame(outer);retrybar.pack(fill='x',pady=5)
         self.retry_model=tk.StringVar(value=next(iter(MODEL_LABELS)))
-        ttk.Label(retrybar,text='本图重试模型').pack(side='left')
+        ttk.Label(retrybar,text='重抠模型（本图/整批）').pack(side='left')
         self.retry_box=ttk.Combobox(retrybar,textvariable=self.retry_model,values=list(MODEL_LABELS),state='readonly',width=27)
         self.retry_box.pack(side='left',padx=8)
         ttk.Label(retrybar,text='BiRefNet 首次需要下载；换模型重试会清空本图编辑。',foreground='#687385').pack(side='left')
+        bulkbar=ttk.Frame(outer);bulkbar.pack(fill='x',pady=4)
+        self.batch_retrying=False;self.retry_cancel=threading.Event()
+        self.bulk_button=ttk.Button(bulkbar,text='整批重抠（仅未通过）',command=self.retry_batch);self.bulk_button.pack(side='left',padx=4)
+        self.bulk_stop=ttk.Button(bulkbar,text='停止整批重抠',command=self.retry_cancel.set,state='disabled');self.bulk_stop.pack(side='left',padx=4)
         ttk.Label(outer,text='关闭或切换图片前自动保存编辑。确认后再修改，会撤销旧确认和工具生成的旧导出；手工改过的导出不会覆盖。',foreground='#687385',wraplength=950).pack(anchor='w',pady=5)
         self.window.bind('<Escape>',lambda e:self.cancel_selection())
         for key,dx,dy in [('Left',-40,0),('Right',40,0),('Up',0,-40),('Down',0,40)]:
@@ -158,17 +175,30 @@ class ReviewWindow:
         ttk.Label(outer,text=self.pinch.status,foreground='#687385').pack(anchor='w')
         self.refresh();self.window.after(100,self.poll)
 
-    def refresh(self):
+    def refresh(self,advance=False,reset=False):
         if self.busy:return
         if not self.discard_selection():return
         if not self.save():return
+        old_keys=[r['source'] for r in getattr(self,'visible',[])]
+        current=self.row['source'] if self.row and not reset else None
         rows=self.store.entries();mode=self.filter.get()
         self.visible=[r for r in rows if mode=='全部' or (mode=='待审核/编辑中/失败' and r['status'] in {'pending','editing','failed','processing'}) or (mode=='已通过' and r['status']=='approved') or (mode=='待重制' and r['status']=='redo')]
         self.listbox.delete(0,'end')
         for r in self.visible:self.listbox.insert('end',STATUSES[r['status']]+' · '+r['source'])
-        if self.visible:self.listbox.selection_set(0);self.select()
+        if advance:
+            pending=[r['source'] for r in rows if r['status'] in {'pending','editing','failed'}]
+            target=review_target([r['source'] for r in rows],pending,current,True)
+            if target is not None and target not in [r['source'] for r in self.visible]:
+                self.filter.set('待审核/编辑中/失败');self.visible=[r for r in rows if r['status'] in {'pending','editing','failed','processing'}]
+                self.listbox.delete(0,'end')
+                for r in self.visible:self.listbox.insert('end',STATUSES[r['status']]+' · '+r['source'])
         else:
-            self.row=None;self.engine=None;self.images={};self.generation+=1;self.detail.set('当前筛选下没有图片；可刷新或切换查看范围。');self.state.set('');self.controls();self.schedule_render()
+            target=review_target(old_keys,[r['source'] for r in self.visible],current)
+        if target is not None:
+            index=next(i for i,r in enumerate(self.visible) if r['source']==target)
+            self.listbox.selection_set(index);self.listbox.see(index);self.select()
+        else:
+            self.row=None;self.engine=None;self.images={};self.generation+=1;self.detail.set(('候选仍在生成，请稍后刷新继续审核。' if any(r['status']=='processing' for r in rows) else '本批审核完成：没有剩余未审核图片；已通过及待重制可切换筛选查看。') if advance else '当前筛选下没有图片；可刷新或切换查看范围。');self.state.set('本批审核完成' if advance and not any(r['status']=='processing' for r in rows) else '');self.controls();self.schedule_render()
 
     def navigate(self,step):
         if self.busy or not self.visible:return
@@ -219,7 +249,10 @@ class ReviewWindow:
             while True:
                 kind,generation,value,error=self.queue.get_nowait()
                 if generation!=self.generation:continue
+                if kind=='bulk_progress':
+                    self.state.set(value);continue
                 self.busy=False
+                if kind=='bulk_retry':self.batch_retrying=False
                 if error:
                     self.state.set('操作未完成，编辑成果保留。');messagebox.showerror('操作未完成',error,parent=self.window)
                 elif kind=='load':
@@ -233,7 +266,12 @@ class ReviewWindow:
                 elif kind=='preview':
                     ExportPreview(self.window,value)
                 elif kind in {'decide','retry'}:
-                    self.row=value;self.state.set(STATUSES[value['status']]+' · '+value['source']);self.refresh()
+                    self.row=value
+                    if kind=='retry':self.engine=None;self.dirty=False;self.note.set(value.get('human',''))
+                    self.state.set(STATUSES[value['status']]+' · '+value['source']);self.refresh(advance=kind=='decide')
+                elif kind=='bulk_retry':
+                    self.engine=None;self.dirty=False;self.row=None;self.filter.set('待审核/编辑中/失败');self.refresh()
+                    messagebox.showinfo('整批重抠结束',f"生成 {value['success']} 张，失败 {value['failed']} 张，跳过已通过 {value['skipped_approved']} 张。"+('已停止，未处理图片保持原状态。' if value['cancelled'] else '')+'请重新审核后导出。',parent=self.window)
                 self.controls()
         except queue.Empty:pass
         if self.window.winfo_exists():self.window.after(100,self.poll)
@@ -246,6 +284,8 @@ class ReviewWindow:
         self.redo.configure(state='normal' if self.row and not self.busy and self.row['status']!='processing' else 'disabled')
         self.retry.configure(state='normal' if self.row and not self.busy else 'disabled')
         self.retry_box.configure(state='readonly' if not self.busy else 'disabled')
+        self.bulk_button.configure(state='normal' if not self.busy else 'disabled')
+        self.bulk_stop.configure(state='normal' if self.batch_retrying else 'disabled')
 
     def tool_changed(self):
         self.cancel_selection()
@@ -347,6 +387,19 @@ class ReviewWindow:
         row=dict(self.row);human=self.note.get();self.state.set('正在验证并导出…')
         self.submit('decide',lambda:self.store.decide(row['source'],row['revision'],decision,human))
 
+    def retry_batch(self):
+        if self.busy or not self.discard_selection() or not self.save():return
+        rows=self.store.entries();targets=[r['source'] for r in rows if r['status']!='approved']
+        if not targets:
+            messagebox.showinfo('整批重抠','这一批没有未通过图片。',parent=self.window);return
+        label=self.retry_model.get();model=MODEL_LABELS[label]
+        if not messagebox.askyesno('整批重抠（仅未通过）',f'使用 {label} 重抠 {len(targets)} 张未通过图片。已通过的 {len(rows)-len(targets)} 张保留。\n重抠会清空目标图片修整、备注及待重制决定，移除工具生成的旧待重制导出；新候选需重新审核。\n继续使用原输出位置：{self.store.destination}',parent=self.window):return
+        from workflow import retry_unapproved
+        self.retry_cancel.clear();self.batch_retrying=True;generation=self.generation
+        def progress(event,value):
+            if event=='status':self.queue.put(('bulk_progress',generation,value,None))
+        self.submit('bulk_retry',lambda:retry_unapproved(self.store.destination,model,self.retry_cancel,progress,targets=targets))
+
     def retry_one(self):
         if self.busy or not self.row or not self.save():return
         if not messagebox.askyesno('重新抠图',f'使用 {self.retry_model.get()} 重新生成本图；会清空编辑、确认状态并移除工具生成的旧导出。',parent=self.window):return
@@ -374,7 +427,8 @@ class ReviewWindow:
             try:
                 original=load_image(path);options=Options(**row['options']);session=make_session(options.model)
                 cutout=remove_background(original,session,options);mask=ImageChops.multiply(cutout.getchannel('A'),original.getchannel('A'))
-                cutout=original.copy();cutout.putalpha(mask);white,_=render_white(cutout,options)
+                info=cutout.info
+                cutout=original.copy();cutout.putalpha(mask);cutout.info.update({k:info[k] for k in ('routing','auto_warnings') if k in info});white,_=render_white(cutout,options)
                 if digest(path)!=source_hash:raise ValueError('原图在处理期间改变')
                 return self.store.finish(current,mask,'；'.join(inspect_cutout(original,cutout,white,options)),cutout.info.get('routing'))
             except Exception as exc:return self.store.fail(current,str(exc))

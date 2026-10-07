@@ -12,7 +12,7 @@ from pathlib import Path
 
 from PIL import Image, ImageOps, ImageChops
 
-VERSION = "1.9.1"
+VERSION = "1.9.3"
 # Change only when image processing or quality screening changes.
 PIPELINE_VERSION = "1.7.0"
 EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".heif"}
