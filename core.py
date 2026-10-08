@@ -12,7 +12,7 @@ from pathlib import Path
 
 from PIL import Image, ImageOps, ImageChops
 
-VERSION = "1.9.3"
+VERSION = "1.9.5"
 # Change only when image processing or quality screening changes.
 PIPELINE_VERSION = "1.7.0"
 EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".heif"}
@@ -102,7 +102,11 @@ def load_image(path):
         except ImportError as exc:
             raise ValueError("HEIC 组件未安装，请重新运行安装程序或先导出为 JPG") from exc
     with Image.open(path) as image:
-        if getattr(image, "n_frames", 1) > 1:
+        # MPO is a JPEG container with a primary photo and additional images.
+        # Process its primary frame only; never flatten animations or multipage files.
+        if image.format == "MPO":
+            image.seek(0)
+        elif getattr(image, "n_frames", 1) > 1:
             raise ValueError("多页或动画图片请先拆成单张静态图片")
         image = ImageOps.exif_transpose(image)
         # Preserve appearance under embedded color profiles when possible.
