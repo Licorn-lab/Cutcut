@@ -1,0 +1,39 @@
+{
+  "source": "https://huggingface.co/apple/coreml-mobileclip",
+  "hf_revision": "3e0a7bfb9fe83da8a3efaa3fd8f7df24214bb947",
+  "github_revision": "48faa0fea4b08d74188b3841771aca6ff2c92852",
+  "files": [
+    {
+      "path": "mobileclip_s0_image.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+      "bytes": 153260,
+      "sha256": "2c1afa132c41c6535817cc67894bd7484bc2cbd084ed5e2f12b24f611af17591"
+    },
+    {
+      "path": "mobileclip_s0_image.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+      "bytes": 22717696,
+      "sha256": "87d8f63997bbd2f38ba7defeaaa2c571928bdece56aa9629542198b3ce906ed6"
+    },
+    {
+      "path": "mobileclip_s0_image.mlpackage/Manifest.json",
+      "bytes": 617,
+      "sha256": "fe07dde983dae92c1799132816ce55f9ff8487f2681b530abf7222025aa27fa4"
+    },
+    {
+      "path": "mobileclip_s0_text.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+      "bytes": 57953,
+      "sha256": "81eba836ff4dbc8ae021d70006288b533ba7eed3c2973d245b0d5ea047305bfd"
+    },
+    {
+      "path": "mobileclip_s0_text.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+      "bytes": 84871616,
+      "sha256": "34723e51445b2630106e94e1fdbebed80e7676b404fb839f4eb9bec97bdcad68"
+    },
+    {
+      "path": "mobileclip_s0_text.mlpackage/Manifest.json",
+      "bytes": 617,
+      "sha256": "a7cb0864a627468a953afd107262097ad74a0fcf82e49df7e00b9c86385bb7db"
+    }
+  ],
+  "runtime_note": "Only compiled S0 image encoder and cached text embeddings retained; downloaded source packages and text encoder removed after verification.",
+  "license_url": "https://github.com/apple-aiml-research/ml-mobileclip/blob/48faa0fea4b08d74188b3841771aca6ff2c92852/LICENSE_MODELS"
+}

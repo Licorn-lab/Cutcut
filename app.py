@@ -20,7 +20,7 @@ CONFIG_PATH = Path.home() / "Library" / "Application Support" / "WhiteBackground
 class App:
     def __init__(self, root):
         self.root = root
-        root.title("批量白底 · Mac")
+        root.title("WhiteFlow · 本地批量白底")
         root.geometry("880x780")
         root.minsize(780, 680)
         self.events = queue.Queue()
@@ -69,7 +69,7 @@ class App:
         outer = ttk.Frame(self.root, padding=24)
         outer.pack(fill="both", expand=True)
         ttk.Label(outer, text="批量白底", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(outer, text="整个文件夹一次处理 · 原图保留 · 本地运行", style="Muted.TLabel").pack(anchor="w", pady=(4, 18))
+        ttk.Label(outer, text="选择图片 → 生成候选 → 人工复核与导出 · 本地保存", style="Muted.TLabel").pack(anchor="w", pady=(4, 18))
         paths = ttk.LabelFrame(outer, text="01  选择文件夹", padding=12)
         paths.pack(fill="x")
         paths.columnconfigure(1, weight=1)
@@ -100,7 +100,7 @@ class App:
         self.matting_box = ttk.Checkbutton(settings, text="细边优化（更慢；刺绣、装裱等不透明物品先关闭）", variable=self.matting)
         self.matting_box.grid(row=4, column=0, columnspan=4, sticky="w", pady=(8, 0))
         self.update_model_controls()
-        ttk.Label(settings, text="装裱保护：双模型较慢，填补内部误抠；仅用于单件实心凸形物品\n镂空、细绳、多件物品请选择通用或 BiRefNet；装裱模式不使用细边优化", style="Muted.TLabel").grid(row=5, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        ttk.Label(settings, text="速度优先：默认 U²-Net；IS-Net 备用；BiRefNet General 仅按需手动选择\n单张换模可在审核与修整中操作", style="Muted.TLabel").grid(row=5, column=0, columnspan=4, sticky="w", pady=(8, 0))
         controls = ttk.Frame(outer)
         controls.pack(fill="x", pady=(0, 12))
         self.start_button = ttk.Button(controls, text="生成候选（全部需审核）", command=self.start)
@@ -108,7 +108,7 @@ class App:
         self.stop_button = ttk.Button(controls, text="停止（完成当前图片后）", command=self.stop, state="disabled")
         self.stop_button.pack(side="left", padx=10)
         ttk.Button(controls, text="打开输出文件夹", command=self.open_output).pack(side="right")
-        ttk.Button(controls, text="重制原因清单", command=self.open_report).pack(side="right", padx=8)
+        ttk.Button(controls, text="打开返工图片", command=self.open_report).pack(side="right", padx=8)
         review_controls = ttk.Frame(outer)
         review_controls.pack(fill="x", pady=(0, 10))
         ttk.Button(review_controls, text="审核与修整", command=self.open_review).pack(side="left")
@@ -169,8 +169,10 @@ class App:
             if (batch_cache(destination) / "human-review-v1" / "review.sqlite3").exists():
                 from workflow import BatchStore
                 existing = BatchStore(destination, source).entries()
-                resets = [row for row in existing if row['status'] in {'editing', 'approved', 'redo'}
-                          and (not options.resume or (row.get('config') != options.signature() and row.get('override_base') != options.signature()))]
+                def needs_reset(row):
+                    expected=options.signature()
+                    return row['status'] in {'editing','approved','redo'} and (not options.resume or (row.get('config')!=expected and row.get('override_base')!=expected))
+                resets=[row for row in existing if needs_reset(row)]
                 if resets and not messagebox.askyesno("重新生成会清空编辑", f"当前设置需要重新生成 {len(resets)} 张已编辑或已决定的图片。会清空这些图片的编辑与确认状态，并移除工具生成的旧导出。是否继续？"):
                     return
             atomic_json(CONFIG_PATH, {"version": VERSION, "source": str(source), "destination": str(destination), "model": self.model.get(),
@@ -260,11 +262,9 @@ class App:
             messagebox.showinfo("还没有输出", "选择输出位置并运行一次后即可打开")
 
     def open_report(self):
-        path = self.output_path() / "待重制" / "重制原因.csv"
-        if path.is_file():
-            subprocess.Popen(["open", str(path)])
-        else:
-            messagebox.showinfo("还没有原因清单", "完成第一张图片后即可查看")
+        path = self.output_path() / '待重制'
+        if path.is_dir():subprocess.Popen(['open', str(path)])
+        else:messagebox.showinfo('还没有返工图片', '标记返工后在此查看；备注在图片文件名中')
 
     def open_review(self):
         if self.review_window is not None and self.review_window.window.winfo_exists():
@@ -272,7 +272,7 @@ class App:
             return
         try:
             from editor import ReviewWindow
-            self.review_window = ReviewWindow(self.root, self.output_path())
+            self.review_window = ReviewWindow(self.root, self.output_path(), Path(self.source.get()).expanduser().resolve())
         except Exception as exc:
             messagebox.showerror("无法打开对照", str(exc))
 

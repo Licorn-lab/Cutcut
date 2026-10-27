@@ -16,7 +16,7 @@ VERSION = "1.9.5"
 # Change only when image processing or quality screening changes.
 PIPELINE_VERSION = "1.7.0"
 EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".heif"}
-MODEL_LABELS = {"自动选模 · 比较候选": "auto", "装裱刺绣保护 · 双模型": "framed-dual", "通用 · IS-Net": "isnet-general-use", "标准 · U²-Net": "u2net", "轻量试跑 · U²-Netp": "u2netp", "细节试跑 · BiRefNet": "birefnet-general"}
+MODEL_LABELS = {"快速 · U²-Net": "u2net", "备用 · IS-Net": "isnet-general-use", "质量 · BiRefNet General": "birefnet-general"}
 MODELS = {"auto", "u2net", "u2netp", "isnet-general-use", "framed-dual", "birefnet-general"}
 
 
@@ -34,6 +34,7 @@ class Options:
     recursive: bool = True
     resume: bool = True
     alpha_matting: bool = False
+    task_context_hash: str = ""
 
     def validate(self):
         if self.model not in MODELS or self.layout not in {"square", "original"}:
@@ -279,6 +280,6 @@ def batch_cache(destination):
 
 
 def run_batch(source, destination, options=None, emit=None, cancel=None,
-              session_factory=make_session, remover=remove_background):
+              session_factory=make_session, remover=remove_background, task_contexts=None):
     from workflow import run_batch as human_batch
-    return human_batch(source, destination, options, emit, cancel, session_factory, remover)
+    return human_batch(source, destination, options, emit, cancel, session_factory, remover, task_contexts=task_contexts)
