@@ -74,6 +74,8 @@ def worker(request):
 class Workspace:
     def __init__(self):
         self.edit_session = None
+        self.cloud_candidate = None
+        self.cloud_busy = False
         self.lock = threading.RLock()
         self.process = None
         self.job = {'busy':False, 'message':'准备就绪', 'progress':0, 'total':0, 'error':''}
@@ -269,11 +271,23 @@ def handler(workspace, token):
             if not self.authorized():return self.send({'error':'本机会话无效，请用启动入口打开'},403)
             try:
                 with workspace.lock:
-                    if parsed.path in ('/','/app.js','/edit.js','/geometry.js','/style.css'):
-                        name = {'/':'index.html','/app.js':'app.js','/edit.js':'edit.js','/geometry.js':'geometry.js','/style.css':'style.css'}[parsed.path]
+                    if parsed.path in ('/','/app.js','/edit.js','/geometry.js','/cloud.js','/style.css'):
+                        name = {'/':'index.html','/app.js':'app.js','/edit.js':'edit.js','/geometry.js':'geometry.js','/cloud.js':'cloud.js','/style.css':'style.css'}[parsed.path]
                         mime = 'text/javascript; charset=utf-8' if name.endswith('.js') else 'text/html; charset=utf-8' if name.endswith('.html') else 'text/css; charset=utf-8'
                         return self.send((ROOT/'web'/name).read_bytes(), mime=mime)
+                    if parsed.path == '/api/instance':return self.send({'root':str(ROOT)})
                     if parsed.path == '/api/state':return self.send(workspace.state(query))
+                    if parsed.path == '/api/cloud/config':
+                        from cloud_matting import public_config, pending
+                        return self.send({**public_config(),'pending_cleanup':len(pending())})
+                    if parsed.path == '/api/cloud/preview':
+                        candidate=workspace.cloud_candidate
+                        if not candidate or candidate['token'] != query.get('token',[''])[0]:raise ValueError('云端候选已失效')
+                        original=load_image(candidate['path']);from PIL import ImageChops
+                        original.putalpha(ImageChops.multiply(original.getchannel('A'),candidate['mask']))
+                        white=__import__('PIL.Image',fromlist=['Image']).new('RGBA',original.size,'white');white.alpha_composite(original)
+                        white.thumbnail((1200,1200));buffer=io.BytesIO();white.convert('RGB').save(buffer,'JPEG',quality=88)
+                        return self.send(buffer.getvalue(),mime='image/jpeg')
                     path = workspace.path(query.get('id',[''])[0]);key = path.relative_to(workspace.source).as_posix()
                     row = workspace.store.get(key)
                     if parsed.path == '/api/item':
@@ -311,7 +325,52 @@ def handler(workspace, token):
                 if not 0 < length <= 65536:raise ValueError('请求大小无效')
                 data = json.loads(self.rfile.read(length));route = urlparse(self.path).path
                 if route == '/api/desktop':return self.send({'error':'接口不存在'},404)
+                if route in ('/api/cloud/run', '/api/cloud/cleanup'):
+                    from cloud_matting import run, cleanup, get_config
+                    with workspace.lock:
+                        if workspace.cloud_busy:raise ValueError('已有腾讯云操作正在进行，请稍候')
+                        if route == '/api/cloud/run':
+                            if data.get('confirmed') is not True:raise ValueError('上传和费用需要用户确认')
+                            workspace.idle();path=workspace.path(data['id']);store=workspace.store
+                            key=path.relative_to(workspace.source).as_posix()
+                            workspace.require_reviewable(key);row=store.get(key)
+                            if row['revision']!=int(data['revision']):raise ValueError('候选已更新，请刷新后重试')
+                            store._validate_source(row)
+                            workspace.cloud_candidate=None
+                        workspace.cloud_busy=True
+                    try:
+                        config=get_config()
+                        if route == '/api/cloud/cleanup':
+                            return self.send({'remaining':cleanup(config)})
+                        mask,remaining=run(path,config)
+                        with workspace.lock:
+                            if workspace.store is not store or workspace.paths.get(data['id']) != path:
+                                raise ValueError('批次已切换，云端候选未应用')
+                            current=store.get(key)
+                            if not current or current['revision'] != row['revision']:
+                                raise ValueError('图片在云端处理期间已修改，云端候选未应用')
+                            store._validate_source(current)
+                            token=secrets.token_urlsafe(24)
+                            workspace.cloud_candidate={'token':token,'path':path,'key':key,'revision':row['revision'],'mask':mask,'store':store}
+                        return self.send({'token':token,'remaining':remaining})
+                    finally:
+                        with workspace.lock:workspace.cloud_busy=False
                 with workspace.lock:
+                    if route == '/api/cloud/config':
+                        from cloud_matting import save_config
+                        if workspace.cloud_busy:raise ValueError('腾讯云操作进行中，请稍后修改配置')
+                        save_config(data);workspace.cloud_candidate=None
+                        return self.send({'ok':True})
+                    if route == '/api/cloud/discard':
+                        workspace.cloud_candidate=None;return self.send({'ok':True})
+                    if route == '/api/cloud/accept':
+                        workspace.idle();candidate=workspace.cloud_candidate
+                        if not candidate or candidate['token']!=data.get('token') or candidate['store'] is not workspace.store:raise ValueError('云端候选已失效')
+                        path=workspace.path(data['id']);key=path.relative_to(workspace.source).as_posix()
+                        if key!=candidate['key']:raise ValueError('图片已切换，请重新生成候选')
+                        row=workspace.store.accept_cloud_mask(key,candidate['revision'],candidate['mask'])
+                        workspace.cloud_candidate=None;workspace.edit_session=None
+                        return self.send({'row':row})
                     if route == '/api/stop':
                         if workspace.process:workspace.process.terminate()
                         workspace.job['message'] = '正在停止，等待当前图片完成'
@@ -376,17 +435,34 @@ def handler(workspace, token):
 
 
 def main():
-    token = secrets.token_urlsafe(32);workspace = Workspace()
-    server = ThreadingHTTPServer(('127.0.0.1',0), handler(workspace,token))
-    url = f'http://127.0.0.1:{server.server_port}/?token={token}'
-    print('CutCut 已启动。关闭终端或按 Control+C 停止服务。',flush=True)
-    webbrowser.open(url)
-    try:server.serve_forever()
-    except KeyboardInterrupt:pass
+    from instance_control import lock, publish, reopen, RUNTIME
+    try:
+        install_lock = lock('install.lock', exclusive=False)
+    except BlockingIOError:
+        print('正在安装或修复 CutCut，请完成后再启动。', flush=True); return
+    if (RUNTIME/'install-pending').exists():
+        print('上次安装中断，请先打开“安装 CutCut”恢复环境。', flush=True); return
+    try:
+        server_lock = lock('server.lock')
+    except BlockingIOError:
+        if not reopen(8):print('已有 CutCut 正在启动，请稍后重试。', flush=True)
+        return
+    server = None; workspace = None
+    try:
+        token = secrets.token_urlsafe(32); workspace = Workspace()
+        server = ThreadingHTTPServer(('127.0.0.1',0), handler(workspace,token))
+        publish(server.server_port, token)
+        url = f'http://127.0.0.1:{server.server_port}/?token={token}'
+        print('CutCut 已启动。关闭终端或按 Control+C 停止服务。',flush=True)
+        webbrowser.open(url)
+        try:server.serve_forever()
+        except KeyboardInterrupt:pass
     finally:
-        if workspace.process:
+        if workspace and workspace.process:
             workspace.process.terminate();workspace.process.wait()
-        server.server_close()
+        if server:server.server_close()
+        (RUNTIME/'server.json').unlink(missing_ok=True)
+        server_lock.close();install_lock.close()
 
 if __name__ == '__main__':
     if sys.argv[1:] == ['--worker']:

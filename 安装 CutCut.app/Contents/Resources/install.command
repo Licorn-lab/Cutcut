@@ -1,10 +1,10 @@
 #!/bin/bash
 set -eu
-APP_ROOT="$(cd "$(dirname "$0")" && pwd)"
+APP_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 cd "$APP_ROOT"
 pause_end() { printf '\n按回车关闭此窗口…'; read -r _ || true; }
 fail() { printf '\n安装未完成：%s\n' "$1"; pause_end; exit 1; }
-trap 'fail "请查看上方错误。修复网络或 Python 后，再次运行安装.command。"' ERR
+trap 'fail "请查看上方错误。修复网络或 Python 后，再次打开“安装 CutCut”。"' ERR
 printf '批量白底 · Mac 安装程序\n\n'
 if [ "$(uname -s)" != "Darwin" ]; then fail "这个安装入口只适用于 Mac。"; fi
 MAC_MAJOR="$(sw_vers -productVersion | cut -d. -f1)"
@@ -32,16 +32,9 @@ if [ -z "$PYTHON_BIN" ]; then
 fi
 printf '已找到：%s\n' "$PYTHON_BIN"
 "$PYTHON_BIN" --version
-printf '\n正在建立独立运行环境，首次安装需要联网…\n'
-"$PYTHON_BIN" -m venv --clear "$APP_ROOT/.venv"
-"$APP_ROOT/.venv/bin/python" -m pip install --upgrade pip
-"$APP_ROOT/.venv/bin/python" -m pip install --only-binary=:all: -r "$APP_ROOT/requirements.txt"
-printf '\n尝试安装可选 HEIC 组件…\n'
-if ! "$APP_ROOT/.venv/bin/python" -m pip install --only-binary=:all: 'pillow-heif==0.18.0'; then
-  printf '可选 HEIC 组件未安装。JPG/PNG 等仍可使用；HEIC 请先导出为 JPG。\n'
-fi
-"$APP_ROOT/.venv/bin/python" -c 'import rembg,onnxruntime,PIL,tkinter; print("核心组件检查通过")'
-chmod u+x "$APP_ROOT/启动CutCut网页.command" "$APP_ROOT/安装.command"
-printf '\n安装完成！今后双击 启动CutCut网页.command 即可。\n'
+printf '\n正在检查或安装独立运行环境…\n'
+"$PYTHON_BIN" "$APP_ROOT/install_environment.py"
+chmod u+x "$APP_ROOT/CutCut.app/Contents/MacOS/launch" "$APP_ROOT/CutCut.app/Contents/Resources/start.command"
+printf '\n安装完成！今后双击 CutCut 即可。\n'
 printf '首次处理会另外下载模型；下载完成后，同一模型可以离线使用。\n'
 pause_end

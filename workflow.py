@@ -278,6 +278,24 @@ class BatchStore:
             self._put(c,current);c.commit();self._report(c);self._gc(c)
             return current
 
+    def accept_cloud_mask(self, key, revision, mask):
+        """Atomically promote a reviewed cloud mask while invalidating old edits."""
+        with self.locked() as c:
+            row=self._get(c,key);self._assert_revision(row,revision);self._validate_source(row)
+            if row['status']=='processing':raise ValueError('图片正在处理')
+            original=load_image(safe_path(self.source,key))
+            if mask.size != original.size:raise ValueError('云端蒙版尺寸不匹配')
+            self._owned_export(row)
+            name,checksum=self._write_mask(mask)
+            self._retire_export(row)
+            for field in ('crop','output_crop','geometry','image_steps'):
+                row.pop(field,None)
+            row.update(mask=name,mask_hash=checksum,base_mask=name,base_hash=checksum,
+                       status='pending',revision=row['revision']+1,error='',automatic='',
+                       routing={'selected':'tencent-cloud','reason':'人工选用云端候选'})
+            self._put(c,row);c.commit();self._report(c);self._gc(c)
+            return row
+
     def fail(self, row, error):
         with self.locked() as c:
             current=self._get(c,row['source']);self._assert_revision(current,row['revision'])

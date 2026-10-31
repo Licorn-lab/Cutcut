@@ -58,7 +58,7 @@ function selectedBlocked(){return !detail?.row?.mask||detail.row.status==='proce
 function updateActionControls(){
  const local=editBusy||actionBusy||drawing||editPoints.length>0;
  const batchBlocked=!!state?.job.busy||local;
- for(const id of ['open','start','restart','restartScope','retry'])$(id).disabled=batchBlocked||(['retry'].includes(id)&&!selected)||(['start','restart','restartScope'].includes(id)&&!state?.count);
+ for(const id of ['open','start','restart','restartScope','retry','cloudRetry'])$(id).disabled=batchBlocked||(['retry','cloudRetry'].includes(id)&&!selected)||(['start','restart','restartScope'].includes(id)&&!state?.count);
  $('approve').disabled=local||selectedBlocked()||!!cropDraft||!!geometryDraft;
  // Failed candidates can still be exported for rework once the batch is idle.
  const failedRework=detail?.row?.status==='failed'&&!state?.job.busy;

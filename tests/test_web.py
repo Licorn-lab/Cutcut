@@ -41,6 +41,57 @@ class WebTests(unittest.TestCase):
     def generate(self):
         def remove(im,session,opt):im=im.copy();im.putalpha(Image.new('L',im.size,255));return im
         return run_batch(self.source,self.root/'out',Options(model='u2net'),session_factory=lambda _:object(),remover=remove)
+    def test_cloud_candidate_needs_confirmation_and_preserves_old_until_accepted(self):
+        self.generate();row=self.ws.store.get('sample.png');revision=row['revision']
+        request={'id':self.ident,'revision':revision,'confirmed':True}
+        with patch('cloud_matting.get_config',return_value={}), patch('cloud_matting.run',return_value=(Image.new('L',(80,60),128),0)):
+            self.assertEqual(self.request('/api/cloud/run',{**request,'confirmed':False})[0],400)
+            code,value=self.request('/api/cloud/run',request)
+        self.assertEqual(code,200);self.assertEqual(self.ws.store.get('sample.png')['revision'],revision)
+        self.assertEqual(self.request('/api/cloud/preview?token='+value['token'])[0],200)
+        code,_=self.request('/api/cloud/accept',{'id':self.ident,'token':value['token']})
+        self.assertEqual(code,200);new=self.ws.store.get('sample.png')
+        self.assertEqual(new['status'],'pending');self.assertEqual(new['revision'],revision+1)
+        self.assertEqual(self.ws.store.load_mask(new).getpixel((1,1)),128)
+        self.assertEqual(digest(self.image),self.before)
+
+    def test_cloud_accept_rejects_stale_candidate(self):
+        self.generate();row=self.ws.store.get('sample.png')
+        with patch('cloud_matting.get_config',return_value={}), patch('cloud_matting.run',return_value=(Image.new('L',(80,60),128),0)):
+            code,value=self.request('/api/cloud/run',{'id':self.ident,'revision':row['revision'],'confirmed':True})
+        self.assertEqual(code,200)
+        updated=self.ws.store.save_crop('sample.png',row['revision'],[0,0,40,40])
+        code,_=self.request('/api/cloud/accept',{'id':self.ident,'token':value['token']})
+        self.assertEqual(code,400);self.assertEqual(self.ws.store.get('sample.png')['crop'],[0,0,40,40])
+        self.assertEqual(self.ws.store.get('sample.png')['revision'],updated['revision'])
+
+    def test_cloud_wait_does_not_block_page_and_rejects_changed_image(self):
+        self.generate();row=self.ws.store.get('sample.png')
+        started=threading.Event();release=threading.Event();responses=[]
+        def slow_run(*_):
+            started.set();self.assertTrue(release.wait(5))
+            return Image.new('L',(80,60),128),0
+        def request_cloud():
+            responses.append(self.request('/api/cloud/run',{'id':self.ident,'revision':row['revision'],'confirmed':True}))
+        with patch('cloud_matting.get_config',return_value={}), patch('cloud_matting.run',side_effect=slow_run):
+            thread=threading.Thread(target=request_cloud);thread.start()
+            try:
+                self.assertTrue(started.wait(5))
+                self.assertEqual(self.request('/api/state')[0],200)
+                self.assertEqual(self.request('/api/cloud/cleanup',{})[0],400)
+                self.assertEqual(self.request('/api/crop',{'id':self.ident,'revision':row['revision'],'box':[0,0,40,40]})[0],200)
+            finally:
+                release.set();thread.join(5)
+        self.assertEqual(responses[0][0],400);self.assertIn('已修改',responses[0][1]['error'])
+        self.assertIsNone(self.ws.cloud_candidate)
+
+    def test_discard_cloud_candidate_preserves_revision(self):
+        self.generate();row=self.ws.store.get('sample.png')
+        with patch('cloud_matting.get_config',return_value={}), patch('cloud_matting.run',return_value=(Image.new('L',(80,60),128),0)):
+            self.assertEqual(self.request('/api/cloud/run',{'id':self.ident,'revision':row['revision'],'confirmed':True})[0],200)
+        self.assertEqual(self.request('/api/cloud/discard',{})[0],200)
+        self.assertEqual(self.ws.store.get('sample.png'),row)
+
     def test_desktop_endpoint_removed(self):
         code, result = self.request('/api/desktop', {})
         self.assertEqual(code, 404)
