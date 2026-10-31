@@ -1,4 +1,4 @@
-"""Human review workflow. Candidate masks are lossless; final JPEGs require a decision."""
+"""Human review workflow. Candidate masks are lossless; final exports require a decision."""
 from __future__ import annotations
 import re
 import hashlib
@@ -13,7 +13,7 @@ import uuid
 from contextlib import contextmanager, closing
 from pathlib import Path
 from PIL import Image, ImageChops
-from image_geometry import validate_geometry, apply_geometry, geometry_size, on_white
+from image_geometry import validate_geometry, apply_geometry, geometry_size
 from core import (Options, VERSION, batch_cache, collect_images, digest, load_image,
                   EXTENSIONS, make_session, remove_background, render_white, inspect_cutout, save_image_atomic)
 
@@ -33,6 +33,55 @@ def rework_note(row):
     name = Path(row['export']).stem
     prefix = Path(row.get('export_name') or row['source']).stem + '_返工-'
     return name[len(prefix):] if name.startswith(prefix) else ''
+
+
+def image_steps(row, frame=False, geometry=None):
+    """Ordered, lossless instructions; legacy records retain their original order."""
+    steps=list(row.get('image_steps', []))
+    if row.get('crop'):steps.append({'crop':row['crop']})
+    current={'geometry':validate_geometry(row.get('geometry'))}
+    if geometry is not None and row.get('output_crop'):
+        # A new adjustment starts with the already cropped result.
+        steps.extend([current, {'crop':row['output_crop']}, {'geometry':geometry}])
+    else:
+        steps.append({'geometry':geometry} if geometry is not None else current)
+        if row.get('output_crop') and not frame:steps.append({'crop':row['output_crop']})
+    return steps
+
+
+def steps_size(size, steps):
+    for step in steps:
+        if 'crop' in step:
+            x1,y1,x2,y2=step['crop'];size=(x2-x1,y2-y1)
+        else:size=geometry_size(size,step['geometry'])
+    return tuple(size)
+
+
+def apply_steps(image, steps, original_size=None):
+    size=original_size or image.size
+    for step in steps:
+        if 'crop' in step:
+            x1,y1,x2,y2=step['crop']
+            box=[round(x1*image.width/size[0]),round(y1*image.height/size[1]),
+                 round(x2*image.width/size[0]),round(y2*image.height/size[1])]
+            image=image.crop((box[0],box[1],max(box[0]+1,box[2]),max(box[1]+1,box[3])))
+            size=(x2-x1,y2-y1)
+        else:
+            image=apply_geometry(image,step['geometry']);size=geometry_size(size,step['geometry'])
+    return image
+
+
+def validate_background(value):
+    if not isinstance(value,str) or (value!='transparent' and not re.fullmatch(r'#[0-9a-fA-F]{6}',value)):
+        raise ValueError('请选择透明背景或有效的六位颜色值')
+    return value.lower()
+
+
+def apply_background(image, value='#ffffff'):
+    value=validate_background(value)
+    if value=='transparent':return image.convert('RGBA')
+    canvas=Image.new('RGBA',image.size,value);canvas.alpha_composite(image.convert('RGBA'))
+    return canvas.convert('RGB')
 
 
 class BatchStore:
@@ -277,15 +326,10 @@ class BatchStore:
             self._put(c,row);c.commit();self._report(c);self._gc(c);return row
 
     def crop_frame_size(self, row, size=None):
-        size=size or self.load_mask(row).size
-        if row.get('crop'):
-            x1,y1,x2,y2=row['crop'];size=(x2-x1,y2-y1)
-        return geometry_size(size,row.get('geometry'))
+        return steps_size(size or self.load_mask(row).size,image_steps(row,frame=True))
 
     def result_size(self, row, size=None):
-        if row.get('output_crop'):
-            x1,y1,x2,y2=row['output_crop'];return x2-x1,y2-y1
-        return self.crop_frame_size(row,size)
+        return steps_size(size or self.load_mask(row).size,image_steps(row))
 
     def save_crop(self, key, revision, box, space='source'):
         if space not in {'source','adjusted'}:raise ValueError('裁剪坐标系无效')
@@ -313,11 +357,25 @@ class BatchStore:
             row=self._get(c,key);self._assert_revision(row,revision);self._validate_source(row)
             self.load_mask(row)
             if row['status']=='processing':raise ValueError('图片正在处理')
-            if validate_geometry(row.get('geometry'))==value:return row
+            if (not row.get('output_crop') and validate_geometry(row.get('geometry'))==value) or (row.get('output_crop') and value==validate_geometry(None)):return row
+            steps=image_steps(row) if row.get('output_crop') else None
+            if steps and len(steps)>64:raise ValueError('本张调整次数较多，请恢复初始构图后继续编辑')
             self._retire_export(row)
-            # Post-correction crop coordinates belong to this exact geometry.
-            row.pop('output_crop',None)
+            if steps:
+                row['image_steps']=steps
+                row.pop('crop',None);row.pop('output_crop',None)
+            # Earlier crops/adjustments stay in order; only the last adjustment is editable.
             row.update(geometry=value,status='editing',revision=row['revision']+1,error='')
+            self._put(c,row);c.commit();self._report(c);return row
+
+    def reset_composition(self, key, revision):
+        with self.locked() as c:
+            row=self._get(c,key);self._assert_revision(row,revision);self._validate_source(row);self.load_mask(row)
+            if row['status']=='processing':raise ValueError('图片正在处理')
+            if not any(row.get(k) for k in ('image_steps','crop','output_crop','geometry')):return row
+            self._retire_export(row)
+            for field in ('image_steps','crop','output_crop','geometry'):row.pop(field,None)
+            row.update(status='editing',revision=row['revision']+1,error='')
             self._put(c,row);c.commit();self._report(c);return row
 
     def preview(self, row, mask=None):
@@ -329,34 +387,36 @@ class BatchStore:
         canvas=Image.new('RGBA',original.size,'white');canvas.alpha_composite(cutout)
         return original,canvas.convert('RGB')
 
-    def preview_result(self, row, crop=False, geometry=None, limit=1800, frame=False):
-        # Downsample before compositing/warping; slider previews do not create full-size RGBA copies.
-        image=load_image(self._validate_source(row))
-        mask=self.load_mask(row)
+    def save_background(self, key, revision, value):
+        value=validate_background(value)
+        with self.locked() as c:
+            row=self._get(c,key);self._assert_revision(row,revision);self._validate_source(row);self.load_mask(row)
+            if row['status']=='processing':raise ValueError('图片正在处理')
+            if row.get('background','#ffffff')==value:return row
+            self._retire_export(row)
+            row.update(background=value,status='editing',revision=row['revision']+1,error='')
+            self._put(c,row);c.commit();self._report(c);return row
+
+    def preview_result(self, row, crop=False, geometry=None, limit=1800, frame=False, geometry_base=False):
+        image=load_image(self._validate_source(row));mask=self.load_mask(row)
         if image.size!=mask.size:raise ValueError('蒙版尺寸与原图不一致')
-        frame_size=self.crop_frame_size(row,image.size)
-        if crop and row.get('crop'):
-            image=image.crop(tuple(row['crop']));mask=mask.crop(tuple(row['crop']))
+        size=image.size
         image.thumbnail((limit,limit))
         if mask.size!=image.size:mask=mask.resize(image.size,Image.Resampling.LANCZOS)
         image.putalpha(ImageChops.multiply(mask,image.getchannel('A')))
-        image=apply_geometry(image,row.get('geometry') if crop and geometry is None else geometry)
-        if crop and not frame and row.get('output_crop'):
-            width,height=frame_size
-            x1,y1,x2,y2=row['output_crop']
-            box=(round(x1*image.width/width),round(y1*image.height/height),
-                 round(x2*image.width/width),round(y2*image.height/height))
-            image=image.crop((box[0],box[1],max(box[0]+1,box[2]),max(box[1]+1,box[3])))
-        return on_white(image)
+        if geometry_base:
+            # Browser transforms this RGBA base live; use the same ordered history as save.
+            return apply_steps(image,image_steps(row,True,validate_geometry(None)),size)
+        if crop:image=apply_steps(image,image_steps(row,frame,geometry),size)
+        return apply_background(image,row.get('background','#ffffff'))
 
     def suggest_crop(self, row):
         self._validate_source(row)
-        mask=self.load_mask(row)
+        mask=self.load_mask(row);native_size=mask.size
         size=self.crop_frame_size(row,mask.size)
-        if row.get('crop'):mask=mask.crop(tuple(row['crop']))
         mask.thumbnail((1800,1800))
         image=Image.new('RGBA',mask.size);image.putalpha(mask)
-        adjusted=apply_geometry(image,row.get('geometry')).getchannel('A')
+        adjusted=apply_steps(image,image_steps(row,frame=True),native_size).getchannel('A')
         box=adjusted.point(lambda v:255 if v>8 else 0).getbbox()
         if not box:raise ValueError('没有可裁剪的主体，请先修整图片')
         import math
@@ -369,12 +429,12 @@ class BatchStore:
     def _export_filename(self, key):
         return Path(key).stem + '.jpg'
 
-    def _allocate_export(self, c, row, folder, naming='original', custom_name='', note=''):
+    def _allocate_export(self, c, row, folder, naming='original', custom_name='', note='', extension='.jpg'):
         owner = self.batch_id + ':' + row['source']
         if naming not in {'original', 'custom'}:raise ValueError('导出命名方式无效')
         if naming == 'custom':
             stem = str(custom_name).strip()
-            if stem.lower().endswith('.jpg'):stem = stem[:-4]
+            stem=re.sub(r'\.(?:jpe?g|png)$','',stem,flags=re.I)
             if not stem or stem in {'.', '..'} or re.search(r'[\\/:*?"<>|\x00-\x1f\x7f]', stem) or stem.endswith('.'):
                 raise ValueError('自定义名称不能为空，也不能包含路径或特殊字符')
         else:stem = Path(row['source']).stem
@@ -386,7 +446,7 @@ class BatchStore:
         index = 1
         while True:
             base = stem + ('' if index == 1 else '_' + str(index))
-            name = base + suffix + '.jpg'
+            name = base + suffix + extension
             if len(name.encode('utf-8')) > 240:raise ValueError('导出名称过长，请缩短名称或返工备注')
             relative = (Path(folder)/Path(row['source']).parent/name).as_posix()
             target = safe_path(self.destination, relative)
@@ -394,7 +454,7 @@ class BatchStore:
             own = row.get('export') == relative and target.is_file() and digest(target) == row.get('export_hash')
             if (not claim or claim[0] == owner) and (not target.exists() or own):
                 c.execute('INSERT OR REPLACE INTO output_registry.paths VALUES (?,?)', (relative,owner))
-                return relative, base + '.jpg'
+                return relative, base + extension
             index += 1
 
     def restart_state(self):
@@ -419,22 +479,23 @@ class BatchStore:
                     alpha=self.load_mask(row)
                     cutout.putalpha(ImageChops.multiply(alpha,original.getchannel('A')))
                 if decision=='approved':
-                    if row.get('crop'):cutout=cutout.crop(tuple(row['crop']))
-                    cutout=apply_geometry(cutout,row.get('geometry'))
-                    if row.get('output_crop'):cutout=cutout.crop(tuple(row['output_crop']))
-                    if row.get('crop') or row.get('output_crop'):white=on_white(cutout)
-                    else:white,_=render_white(cutout,Options(**row['options']))
+                    cutout=apply_steps(cutout,image_steps(row))
+                    background=row.get('background','#ffffff')
+                    if any('crop' in step for step in image_steps(row)):
+                        white=apply_background(cutout,background)
+                    else:white,_=render_white(cutout,Options(**row['options']),background=background)
                 else:
                     white=Image.new('RGBA',original.size,'white');white.alpha_composite(cutout);white=white.convert('RGB')
                 folder='白底图' if decision=='approved' else '待重制'
-                export, export_name = self._allocate_export(c, row, folder, naming, custom_name, human if decision == 'redo' else '')
+                extension='.png' if decision=='approved' and row.get('background')=='transparent' else '.jpg'
+                export, export_name = self._allocate_export(c, row, folder, naming, custom_name, human if decision == 'redo' else '',extension)
                 target=safe_path(self.destination,export)
                 if target.exists() and (row.get('export')!=export or digest(target)!=row.get('export_hash')):
                     raise ValueError('目标位置已有非本次生成或被修改的文件，请移走后再导出')
                 # Validation happens on a staged file; a failed write cannot destroy an existing result.
-                staging=self.cache/('export-'+uuid.uuid4().hex+'.jpg')
+                staging=self.cache/('export-'+uuid.uuid4().hex+extension)
                 try:
-                    save_image_atomic(white,staging,'JPEG',quality=100,subsampling=0)
+                    save_image_atomic(white,staging,'PNG' if extension=='.png' else 'JPEG',**({} if extension=='.png' else {'quality':100,'subsampling':0}))
                     with Image.open(staging) as saved:
                         saved.load()
                         if saved.size != white.size:raise ValueError('导出文件尺寸异常，已保留候选和编辑成果')
@@ -457,7 +518,8 @@ class BatchStore:
             self._put(c,row);c.commit();self._report(c);self._gc(c);return row
 
 
-def run_batch(source,destination,options=None,emit=None,cancel=None,session_factory=make_session,remover=remove_background,task_contexts=None,image_keys=None,restart=False,continue_existing=False):
+def run_batch(source,destination,options=None,emit=None,cancel=None,session_factory=make_session,remover=remove_background,task_contexts=None,image_keys=None,restart=False,continue_existing=False,restart_scope="all"):
+    if restart_scope not in {"all","unapproved"}:raise ValueError("重做范围无效")
     options=options or Options();options.validate()
     if options.white_format!='jpg':raise ValueError('人工审核版最终输出固定为 JPG')
     emit=emit or (lambda event,value:None);cancel=cancel or threading.Event()
@@ -476,7 +538,10 @@ def run_batch(source,destination,options=None,emit=None,cancel=None,session_fact
             saved = c.execute("SELECT value FROM metadata WHERE key='restart'").fetchone()
             restart_plan = json.loads(saved[0]) if saved else None
             if restart:
-                restart_plan = {'options':vars(options), 'pending':[p.relative_to(source).as_posix() for p in images]}
+                approved = {key for key,data in c.execute('SELECT key,data FROM items') if json.loads(data).get('status')=='approved'}
+                targets = [p.relative_to(source).as_posix() for p in images if restart_scope=='all' or p.relative_to(source).as_posix() not in approved]
+                if not targets:raise ValueError('没有需要重做的未通过图片')
+                restart_plan = {'options':vars(options), 'pending':targets, 'scope':restart_scope}
                 c.execute("INSERT OR REPLACE INTO metadata VALUES ('restart', ?)", (json.dumps(restart_plan),))
             if restart_plan:
                 options = Options(**restart_plan['options'])
@@ -487,6 +552,15 @@ def run_batch(source,destination,options=None,emit=None,cancel=None,session_fact
         for index,path in enumerate(images,1):
             if cancel.is_set():stats['cancelled']=True;break
             key=path.relative_to(source).as_posix();emit('status',f'{index}/{len(images)} · {key}')
+            # A user may approve a completed candidate while another image is running.
+            if restart_plan and restart_plan.get('scope')=='unapproved':
+                latest=store.get(key)
+                if latest and latest.get('status')=='approved':
+                    restart_plan['pending'].remove(key)
+                    with store.locked() as c:
+                        if restart_plan['pending']:c.execute("UPDATE metadata SET value=? WHERE key='restart'",(json.dumps(restart_plan),))
+                        else:c.execute("DELETE FROM metadata WHERE key='restart'")
+                    stats['skipped']+=1;emit('progress',index);continue
             try:source_hash=digest(path)
             except OSError as exc:
                 row=store.prepare(key,None,options);row=store.fail(row,f'原图无法读取：{exc}')

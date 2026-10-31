@@ -41,6 +41,40 @@ class WebTests(unittest.TestCase):
     def generate(self):
         def remove(im,session,opt):im=im.copy();im.putalpha(Image.new('L',im.size,255));return im
         return run_batch(self.source,self.root/'out',Options(model='u2net'),session_factory=lambda _:object(),remover=remove)
+    def test_export_feedback_actual_collision_name_and_safe_reveal(self):
+        self.generate();row=self.ws.store.get('sample.png')
+        foreign=self.root/'out/白底图/sample.jpg';foreign.write_bytes(b'other image')
+        code,value=self.request('/api/decide',{'id':self.ident,'revision':row['revision'],'decision':'approved'})
+        self.assertEqual(code,200);info=value['export']
+        self.assertNotEqual(info['name'],'sample.jpg');self.assertEqual(info['id'],self.ident)
+        self.assertTrue(Path(info['path']).is_file());self.assertEqual(Path(info['path']).name,info['name'])
+        self.assertEqual(self.request('/api/item?id='+self.ident)[1]['export'],info)
+        self.ws.job['busy']=True
+        with patch.object(web.subprocess,'run') as reveal:
+            # An arbitrary submitted path must never become the opened path.
+            code,_=self.request('/api/reveal-export',{'id':self.ident,'relative':info['relative'],'path':'/etc/passwd'})
+            self.assertEqual(code,200);self.assertEqual(reveal.call_args.args[0],['open','-R',info['path']])
+            self.assertEqual(self.request('/api/reveal-export',{'id':self.ident,'relative':'../outside'})[0],400)
+            self.assertEqual(self.request('/api/reveal-export',{'id':'../outside','relative':info['relative']})[0],400)
+            self.assertEqual(reveal.call_count,1)
+            Path(info['path']).unlink()
+            self.assertEqual(self.request('/api/reveal-export',{'id':self.ident,'relative':info['relative']})[0],400)
+        self.assertEqual(foreign.read_bytes(),b'other image');self.assertEqual(digest(self.image),self.before)
+
+    def test_unapproved_restart_confirmation_and_approved_review_access(self):
+        self.generate();row=self.ws.store.get('sample.png')
+        with patch.object(self.ws,'start') as start:
+            self.assertEqual(self.request('/api/start',{'mode':'restart_unapproved'})[0],400)
+            self.assertEqual(self.request('/api/start',{'mode':'restart_unapproved','confirmed':True})[0],200)
+            self.assertEqual(start.call_args.args[0]['mode'],'restart_unapproved')
+        row=self.ws.store.decide('sample.png',row['revision'],'approved','')
+        with patch.object(self.ws,'start') as start:
+            self.assertEqual(self.request('/api/start',{'mode':'restart_unapproved','confirmed':True})[0],400)
+            start.assert_not_called()
+        self.ws.active_request={'action':'batch','mode':'restart_unapproved'};self.ws.job.update(busy=True,progress=0)
+        self.assertTrue(self.request('/api/item?id='+self.ident)[1]['reviewable'])
+        self.assertEqual(self.request('/api/state')[1]['items'][0]['reviewable'],True)
+
     def test_manual_selection_crop_export_and_reopen(self):
         from PIL import ImageDraw
         self.generate();row=self.ws.store.get('sample.png')
@@ -126,6 +160,44 @@ class WebTests(unittest.TestCase):
         self.assertNotIn('geometry',prepared);self.assertNotIn('crop',prepared)
         self.assertEqual(digest(self.image),self.before)
 
+    def test_live_geometry_base_preserves_alpha_and_completed_crop_history(self):
+        from PIL import ImageDraw
+        from image_geometry import apply_geometry
+        image=Image.new('RGB',(80,60),'white');draw=ImageDraw.Draw(image)
+        draw.rectangle((8,10,35,45),fill='red');draw.rectangle((50,20,65,50),fill='blue')
+        image.save(self.image);original_hash=digest(self.image)
+        self.generate();row=self.ws.store.get('sample.png')
+        mask=Image.new('L',image.size,0);ImageDraw.Draw(mask).rectangle((8,10,65,50),fill=255)
+        row=self.ws.store.save_edit('sample.png',row['revision'],mask,'')
+        row=self.ws.store.save_background('sample.png',row['revision'],'#e9dccb')
+        geometry={'turns':1,'flip':True,'angle':10,'horizontal':25,'vertical':-15}
+        row=self.ws.store.save_geometry('sample.png',row['revision'],geometry)
+        rgba=image.convert('RGBA');rgba.putalpha(mask)
+        def check_base(expected):
+            before=self.ws.store.get('sample.png')
+            code,data=self.request(f'/api/image?id={self.ident}&kind=result&revision={before["revision"]}&geometry_base=1')
+            self.assertEqual(code,200)
+            with Image.open(io.BytesIO(data)) as base:
+                self.assertEqual(base.format,'PNG');self.assertEqual(base.mode,'RGBA')
+                self.assertEqual(base.size,expected.size);self.assertEqual(base.tobytes(),expected.tobytes())
+                self.assertEqual(base.getchannel('A').getextrema(),(0,255))
+            self.assertEqual(self.ws.store.get('sample.png'),before)
+        # A live draft replaces the editable tail, so the base excludes that geometry.
+        check_base(rgba)
+        corrected=apply_geometry(rgba,geometry);box=[2,3,corrected.width-2,corrected.height-3]
+        old_revision=row['revision']
+        row=self.ws.store.save_crop('sample.png',row['revision'],box,space='adjusted')
+        completed=corrected.crop(tuple(box))
+        # After a completed crop, a new live adjustment starts from that cropped result.
+        check_base(completed)
+        row=self.ws.store.save_geometry('sample.png',row['revision'],{'turns':2,'angle':-5})
+        check_base(completed)
+        self.assertEqual(self.request(f'/api/image?id={self.ident}&kind=result&revision={old_revision}&geometry_base=1')[0],400)
+        code,data=self.request(f'/api/image?id={self.ident}&kind=original&geometry_base=1')
+        self.assertEqual(code,200)
+        with Image.open(io.BytesIO(data)) as original:self.assertEqual(original.size,(80,60))
+        self.assertEqual(digest(self.image),original_hash)
+
     def test_corrected_crop_preview_matches_export_and_reopens(self):
         from PIL import ImageDraw
         from image_geometry import apply_geometry, on_white
@@ -175,9 +247,100 @@ class WebTests(unittest.TestCase):
             with Image.open(self.root/'out'/row['export']) as exported:
                 self.assertEqual(exported.size,expected.size)
                 self.assertLess(np.abs(np.array(exported,dtype=float)-np.array(expected,dtype=float)).mean(),2)
+            row=self.ws.store.save_crop('sample.png',row['revision'],None,space='adjusted')
         row=self.ws.store.save_geometry('sample.png',row['revision'],{})
         self.assertNotIn('output_crop',row)
         self.assertEqual(digest(self.image),original_hash)
+
+    def test_alternating_crop_and_geometry_preserves_previous_result(self):
+        from PIL import ImageDraw
+        from image_geometry import apply_geometry, on_white
+        image=Image.new('RGB',(80,60),'white');draw=ImageDraw.Draw(image)
+        draw.rectangle((5,8,30,50),fill='red');draw.rectangle((42,18,73,44),fill='blue');image.save(self.image)
+        before=digest(self.image);self.generate();row=self.ws.store.get('sample.png')
+        first={'turns':1,'angle':7,'horizontal':20}
+        row=self.ws.store.save_geometry('sample.png',row['revision'],first)
+        expected=apply_geometry(image.convert('RGBA'),first)
+        box=[3,4,expected.width-4,expected.height-3]
+        row=self.ws.store.save_crop('sample.png',row['revision'],box,'adjusted');expected=expected.crop(box)
+        next_geometry={'turns':1,'flip':True,'vertical':-12}
+        preview_url=f'/api/image?id={self.ident}&kind=result&revision={row["revision"]}&crop=1&frame=1&geometry='+quote(json.dumps(next_geometry))
+        code,data=self.request(preview_url);self.assertEqual(code,200)
+        expected=apply_geometry(expected,next_geometry)
+        import numpy as np
+        with Image.open(io.BytesIO(data)) as preview:
+            self.assertEqual(preview.size,expected.size)
+            self.assertLess(np.abs(np.array(preview,dtype=float)-np.array(on_white(expected),dtype=float)).mean(),5)
+        row=self.ws.store.save_geometry('sample.png',row['revision'],next_geometry)
+        self.assertTrue(row['image_steps']);self.assertNotIn('output_crop',row)
+        suggestion=self.ws.store.suggest_crop(row);self.assertEqual(tuple(suggestion['dimensions']),expected.size)
+        second=[2,2,expected.width-2,expected.height-2]
+        row=self.ws.store.save_crop('sample.png',row['revision'],second,'adjusted');expected=expected.crop(second)
+        reopened=BatchStore(self.root/'out').get('sample.png')
+        self.assertEqual(reopened['image_steps'],row['image_steps'])
+        self.assertEqual(self.ws.store.result_size(reopened),expected.size)
+        self.assertEqual(self.ws.store.preview_result(reopened,crop=True).tobytes(),on_white(expected).tobytes())
+        row=self.ws.store.decide('sample.png',row['revision'],'approved')
+        with Image.open(self.root/'out'/row['export']) as exported:
+            self.assertEqual(exported.size,expected.size)
+            self.assertLess(np.abs(np.array(exported,dtype=float)-np.array(on_white(expected),dtype=float)).mean(),2)
+        self.assertEqual(digest(self.image),before)
+
+    def test_reset_composition_preserves_mask_and_background(self):
+        self.generate();store=self.ws.store;key='sample.png';row=store.get(key)
+        row=store.save_crop(key,row['revision'],[5,5,70,50],space='adjusted')
+        row=store.save_geometry(key,row['revision'],{'turns':1})
+        row=store.save_background(key,row['revision'],'transparent')
+        mask_hash=row['mask_hash']
+        code,value=self.request('/api/geometry',{'id':self.ident,'revision':row['revision'],'reset_composition':True})
+        self.assertEqual(code,200);row=value['row']
+        self.assertFalse(any(row.get(k) for k in ('crop','output_crop','geometry','image_steps')))
+        self.assertEqual(store.result_size(row),(80,60))
+        self.assertEqual(row['mask_hash'],mask_hash);self.assertEqual(row['background'],'transparent')
+        self.assertEqual(digest(self.image),self.before)
+        self.assertEqual(self.request('/api/geometry',{'id':self.ident,'revision':row['revision']-1,'reset_composition':True})[0],400)
+
+    def test_transparent_square_export_retains_alpha(self):
+        from PIL import ImageDraw
+        options=Options(model='u2net',layout='square',size=300)
+        row=self.ws.store.prepare('sample.png',digest(self.image),options)
+        mask=Image.new('L',(80,60),0);ImageDraw.Draw(mask).rectangle((20,10,60,50),fill=255)
+        row=self.ws.store.finish(row,mask,'')
+        row=self.ws.store.save_background('sample.png',row['revision'],'transparent')
+        row=self.ws.store.decide('sample.png',row['revision'],'approved','')
+        with Image.open(self.root/'out'/row['export']) as image:
+            self.assertEqual(image.size,(300,300));self.assertEqual(image.mode,'RGBA')
+            self.assertEqual(image.getpixel((0,0))[3],0);self.assertEqual(image.getpixel((150,150))[3],255)
+
+    def test_background_preview_export_conflict_and_reopen(self):
+        self.generate();row=self.ws.store.get('sample.png')
+        mask=Image.new('L',(80,60),0)
+        from PIL import ImageDraw
+        ImageDraw.Draw(mask).rectangle((10,10,60,45),fill=255)
+        row=self.ws.store.save_edit('sample.png',row['revision'],mask,'')
+        self.assertEqual(self.request('/api/background',{'id':self.ident,'revision':row['revision'],'background':'url(bad)'})[0],400)
+        code,value=self.request('/api/background',{'id':self.ident,'revision':row['revision'],'background':'transparent'})
+        self.assertEqual(code,200);row=value['row']
+        _,data=self.request(f'/api/image?id={self.ident}&kind=result&revision={row["revision"]}&crop=1')
+        with Image.open(io.BytesIO(data)) as preview:
+            self.assertEqual(preview.format,'PNG');self.assertEqual(preview.getpixel((0,0))[3],0)
+        target=self.root/'out/白底图/sample.png';target.write_bytes(b'keep existing')
+        row=self.ws.store.decide('sample.png',row['revision'],'approved')
+        self.assertEqual(Path(row['export']).name,'sample_2.png');self.assertEqual(target.read_bytes(),b'keep existing')
+        with Image.open(self.root/'out'/row['export']) as exported:
+            self.assertEqual(exported.mode,'RGBA');self.assertEqual(exported.getpixel((0,0))[3],0)
+            self.assertEqual(exported.getpixel((20,20)),(255,0,0,255))
+        self.assertEqual(BatchStore(self.root/'out').get('sample.png')['background'],'transparent')
+        old=self.root/'out'/row['export']
+        row=self.ws.store.save_background('sample.png',row['revision'],'#438edb')
+        self.assertFalse(old.exists());self.assertEqual(row['status'],'editing')
+        self.assertEqual(self.ws.store.preview_result(row,crop=True).getpixel((0,0)),(67,142,219))
+        row=self.ws.store.decide('sample.png',row['revision'],'approved',naming='custom',custom_name='新名称.png')
+        self.assertEqual(Path(row['export']).name,'新名称.jpg')
+        with Image.open(self.root/'out'/row['export']) as exported:
+            self.assertEqual(exported.format,'JPEG')
+            self.assertTrue(all(abs(a-b)<=2 for a,b in zip(exported.getpixel((0,0)),(67,142,219))))
+        self.assertEqual(digest(self.image),self.before)
 
     def test_completed_image_editable_while_another_image_is_inferred(self):
         Image.new('RGB',(80,60),'blue').save(self.source/'z.png')
@@ -463,5 +626,52 @@ class RestartWorkerTests(unittest.TestCase):
                 self.assertEqual(store.restart_state()['pending'],['b.png'])
                 seen.clear();stop[0]=False;revision=row['revision'];web.worker(request)
                 self.assertEqual(seen,['u2net']);self.assertEqual(store.get('a.png')['revision'],revision);self.assertIsNone(store.restart_state())
+
+class ScopedRestartTests(unittest.TestCase):
+    def test_unapproved_restart_preserves_approved_export_crop_and_resume_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/'source';source.mkdir();dest=root/'out'
+            for name in ('a.png','b.png','c.png'):Image.new('RGB',(32,24),'red').save(source/name)
+            cancel=threading.Event();seen=[]
+            def remove(im,session,opt):
+                seen.append(opt.model)
+                result=im.copy();result.putalpha(Image.new('L',im.size,255));return result
+            def run(options,**kwargs):return run_batch(source,dest,options,session_factory=lambda _:object(),remover=remove,**kwargs)
+            with patch.dict('os.environ',{'WHITEBG_DATA_HOME':str(root/'runtime')}):
+                run(Options(model='u2net'));store=BatchStore(dest,source);row=store.get('a.png')
+                row=store.save_crop('a.png',row['revision'],[1,1,20,20]);approved=store.decide('a.png',row['revision'],'approved','')
+                output=dest/approved['export'];checksum=digest(output);originals={p.name:digest(p) for p in source.iterdir()}
+                seen.clear()
+                def stop(event,value):
+                    if event=='progress':cancel.set()
+                stats=run(Options(model='isnet-general-use'),restart=True,restart_scope='unapproved',cancel=cancel,emit=stop)
+                self.assertEqual(stats['total'],2);self.assertEqual(seen,['isnet-general-use'])
+                self.assertEqual(store.get('a.png'),approved);self.assertEqual(digest(output),checksum)
+                self.assertEqual(store.restart_state()['scope'],'unapproved');self.assertEqual(store.restart_state()['pending'],['c.png'])
+                revision=store.get('b.png')['revision'];seen.clear()
+                # Resume uses the checkpoint model and scope, regardless of current controls.
+                run(Options(model='u2net'),continue_existing=True)
+                self.assertEqual(seen,['isnet-general-use']);self.assertEqual(store.get('b.png')['revision'],revision)
+                self.assertIsNone(store.restart_state());self.assertEqual(store.get('a.png'),approved)
+                self.assertEqual({p.name:digest(p) for p in source.iterdir()},originals)
+                # A deliberate all-images restart still replaces the approved candidate.
+                seen.clear();run(Options(model='u2net'),restart=True)
+                self.assertEqual(len(seen),3);self.assertEqual(store.get('a.png')['status'],'pending');self.assertFalse(output.exists())
+
+    def test_failed_restart_stays_pending_and_empty_scope_leaves_export_untouched(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/'source';source.mkdir();Image.new('RGB',(20,20),'red').save(source/'a.png')
+            def good(im,*_):result=im.copy();result.putalpha(Image.new('L',im.size,255));return result
+            with patch.dict('os.environ',{'WHITEBG_DATA_HOME':str(root/'runtime')}):
+                def run(**kwargs):return run_batch(source,root/'out',Options(model='u2net'),session_factory=lambda _:object(),**kwargs)
+                run(remover=good)
+                with patch('workflow.inspect_cutout',side_effect=ValueError('temporary failure')):
+                    stats=run(remover=good,restart=True,restart_scope='unapproved')
+                store=BatchStore(root/'out',source);self.assertEqual(stats['failed'],1)
+                self.assertEqual(store.restart_state()['pending'],['a.png'])
+                run(remover=good);row=store.get('a.png');row=store.decide('a.png',row['revision'],'approved','')
+                output=root/'out'/row['export'];checksum=digest(output)
+                with self.assertRaisesRegex(ValueError,'没有需要重做'):run(remover=good,restart=True,restart_scope='unapproved')
+                self.assertEqual(store.get('a.png'),row);self.assertEqual(digest(output),checksum);self.assertIsNone(store.restart_state())
 
 if __name__=='__main__':unittest.main()

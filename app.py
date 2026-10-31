@@ -20,7 +20,7 @@ CONFIG_PATH = Path.home() / "Library" / "Application Support" / "WhiteBackground
 class App:
     def __init__(self, root):
         self.root = root
-        root.title("WhiteFlow · 本地批量白底")
+        root.title("CutCut · 本地批量白底")
         root.geometry("880x780")
         root.minsize(780, 680)
         self.events = queue.Queue()

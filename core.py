@@ -120,7 +120,7 @@ def load_image(path):
         return image.convert("RGBA")
 
 
-def render_white(cutout, options):
+def render_white(cutout, options, background="white"):
     cutout = cutout.convert("RGBA")
     alpha = cutout.getchannel("A")
     # A small tolerance ignores imperceptible specks when locating the subject.
@@ -128,8 +128,9 @@ def render_white(cutout, options):
     if bbox is None:
         raise ValueError("未识别到物品，请换模型或手工处理")
     warnings = []
+    fill=(0,0,0,0) if background=="transparent" else background
     if options.layout == "original":
-        canvas = Image.new("RGBA", cutout.size, "white")
+        canvas = Image.new("RGBA", cutout.size, fill)
         canvas.alpha_composite(cutout)
     else:
         # Preserve faint soft edges close to the detected subject.
@@ -140,9 +141,9 @@ def render_white(cutout, options):
         factor = options.size * options.occupancy / max(subject.size)
         target = (max(1, round(subject.width * factor)), max(1, round(subject.height * factor)))
         subject = subject.resize(target, Image.Resampling.LANCZOS)
-        canvas = Image.new("RGBA", (options.size, options.size), "white")
+        canvas = Image.new("RGBA", (options.size, options.size), fill)
         canvas.alpha_composite(subject, ((options.size - target[0]) // 2, (options.size - target[1]) // 2))
-    return canvas.convert("RGB"), warnings
+    return (canvas if background=="transparent" else canvas.convert("RGB")), warnings
 
 
 def save_image_atomic(image, path, fmt, **kwargs):

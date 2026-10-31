@@ -1,15 +1,5 @@
 #!/bin/bash
+# 兼容旧启动入口；当前产品名称为 CutCut。
 set -euo pipefail
 APP_ROOT="$(cd "$(dirname "$0")" && pwd)"
-PYTHON_RUNTIME="$APP_ROOT/.venv/bin/python"
-cd "$APP_ROOT"
-if [ ! -x "$PYTHON_RUNTIME" ]; then
-  printf '未找到 Python 环境，请先运行 安装.command。\n'
-  read -r -p '按回车关闭…' _
-  exit 1
-fi
-export OMP_NUM_THREADS=2
-export OPENBLAS_NUM_THREADS=2
-export MKL_NUM_THREADS=2
-export WHITEBG_DATA_HOME="$APP_ROOT/data/runtime"
-"$PYTHON_RUNTIME" -u "$APP_ROOT/web_server.py"
+exec "$APP_ROOT/启动CutCut网页.command" "$@"

@@ -52,3 +52,59 @@
 #cropBox:after{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(to right,transparent 33.1%,#fff9 33.333%,transparent 33.6%,transparent 66.4%,#fff9 66.667%,transparent 66.9%),linear-gradient(to bottom,transparent 33.1%,#fff9 33.333%,transparent 33.6%,transparent 66.4%,#fff9 66.667%,transparent 66.9%)}
 
 .crop-controls{margin-left:0}.crop-size-inputs{display:inline-flex;align-items:center;gap:5px;color:var(--muted);font-size:11px}.crop-size-inputs label{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}.crop-size-inputs input{width:85px;min-height:29px;padding:5px 7px;font-variant-numeric:tabular-nums}
+
+/* A quiet indigo wash keeps the workbench distinct while images remain neutral. */
+:root{--page:#f3f4fa;--line:#e0e3ef;--canvas:#e9ecf3;--accent:#6251df;--soft:#efedff}
+body{background:radial-gradient(ellipse at 10% 0%,#e8e3ff80,transparent 55%),var(--page)}
+.app-header{background:linear-gradient(105deg,#faf9ff,#ffffff 55%,#f0f4ff);border-bottom-color:#dedcf0}
+.logo{filter:drop-shadow(0 2px 4px #6251df22)}
+.primary{background:linear-gradient(115deg,#7763ed,#5545d3);border-color:#6551dc;box-shadow:0 2px 4px #6251df15}
+.primary:hover{background:linear-gradient(115deg,#6955de,#4738c4);border-color:#5545c8}
+.panel{box-shadow:0 2px 8px #30286204}
+.library .item.active{background:linear-gradient(100deg,#eae5ff,#f2f0ff)}
+.editor-header{background:linear-gradient(110deg,#fdfcff,#fff)}
+.utilitybar{align-items:center;justify-content:space-between;gap:8px}
+.background-controls,.background-controls label,.ratio-label{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;font-size:11px}
+.background-controls select,.ratio-label select{margin:0;width:auto;min-height:29px;font-size:11px;padding:4px 7px}
+.background-controls input[type=color]{width:32px;height:29px;min-height:29px;padding:2px;cursor:pointer}
+#backgroundHint{color:var(--muted);font-size:10px}
+#resultView.transparent-preview{background-color:#fff;background-image:linear-gradient(45deg,#e2e5ed 25%,transparent 25%),linear-gradient(-45deg,#e2e5ed 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#e2e5ed 75%),linear-gradient(-45deg,transparent 75%,#e2e5ed 75%);background-size:18px 18px;background-position:0 0,0 9px,9px -9px,-9px 0}
+#cropDimensions{display:none}
+.crop-size-inputs input{width:76px}
+@media(max-width:800px){#backgroundHint{display:none}.utilitybar{gap:6px}.crop-controls{gap:5px}}
+
+/* Editing actions stay together; model retry occupies the secondary toolbar. */
+.composition-tools{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-left:auto;padding-left:10px;border-left:1px solid var(--line)}
+.composition-tools button{white-space:nowrap}
+.retry-controls{display:flex;align-items:center;flex-wrap:wrap;gap:6px;font-size:11px;color:var(--muted)}
+.retry-controls select{width:auto;min-height:29px;margin:0;padding:4px 7px;font-size:11px}
+.crop-toolbar{background:#fafaff;justify-content:flex-start}
+.background-controls{flex-wrap:wrap}
+.custom-color-controls{display:inline-flex;align-items:center;gap:10px;padding:4px 8px;border:1px solid #d8d2f4;background:#f8f6ff;border-radius:6px}
+.color-picker-label{cursor:pointer;color:var(--ink);font-weight:500}
+.background-controls .color-picker-label input[type=color]{width:38px;height:30px;border-color:#bcb4dc;background:white}
+.background-controls .hex-label{color:var(--muted)}
+#backgroundHex{font:12px ui-monospace,SFMono-Regular,monospace;letter-spacing:.4px;width:90px;min-height:29px;margin:0;padding:4px 7px;background:white;text-transform:uppercase}
+#backgroundHex:invalid{border-color:#c84b44}
+#geometryPreview{position:absolute;inset:0;margin:auto;overflow:hidden;pointer-events:none;z-index:1}
+#geometrySurface{display:block;width:100%;height:100%;transform-origin:0 0}
+.options #squareHint{max-width:230px;line-height:1.6;font-size:11px}
+@media(max-width:1100px){.composition-tools{padding-left:0;border-left:0;margin-left:0}}
+
+/* Rename the export directly in the review heading without changing the source. */
+.editor-title .editable-title{display:flex;align-items:center;gap:2px;overflow:visible;min-width:0}
+#titleName{flex:0 1 auto;min-width:0;max-width:100%;min-height:28px;padding:2px 3px;margin-left:-4px;border:1px solid transparent;background:transparent;font:inherit;font-weight:700;text-overflow:ellipsis;border-radius:4px}
+#titleName:hover:enabled{background:var(--soft);border-color:var(--line)}
+#titleName:focus{background:white;border-color:var(--accent);outline-offset:1px;text-overflow:clip}
+#titleName:disabled{opacity:1;color:var(--ink)}
+#titleExtension{flex-shrink:0;font-weight:700}
+.rename-icon{flex-shrink:0;width:13px;height:13px;margin-left:5px;color:var(--muted);pointer-events:none}
+.editable-title:has(input:disabled) .rename-icon{display:none}
+
+/* Batch scope, truthful brush radius, and persistent save/export feedback. */
+.restart-scope{display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--muted,#737787);margin-top:3px}.restart-scope select{width:100%}
+.editbar .brush-size{gap:7px}.editbar .brush-size>input[type=range]{width:100px;min-width:65px;padding:0;accent-color:#5845ed}.editbar .brush-size>input[type=number]{width:65px}
+.brush-cursor{position:absolute;pointer-events:none;border:1.5px solid #e56932;background:#e5693218;border-radius:50%;transform:translate(-50%,-50%);box-shadow:0 0 0 1px #fff9;z-index:8}.brush-cursor[data-mode=restore]{border-color:#148558;background:#14855818}.brush-cursor:after{content:"";position:absolute;width:3px;height:3px;left:50%;top:50%;transform:translate(-50%,-50%);border-radius:50%;background:currentColor}
+#editStatus[data-kind=saving]{color:#6150c9}#editStatus[data-kind=saved]{color:#647081}#editStatus[data-kind=exported]{color:#188454}#editStatus[data-kind=error]{color:#b53d31}#editStatus[data-kind=draft]{color:#916315}
+.editor-status{flex-wrap:wrap;gap:8px}#retrySave{font-size:12px;padding:4px 8px}
+.export-feedback{display:flex;align-items:center;gap:8px;min-width:0;padding:5px 0;color:#188454;font-size:12px}.export-feedback>span:first-child{white-space:nowrap}.export-feedback #exportPath{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;color:#62697b}.export-feedback button{font-size:12px;white-space:nowrap;padding:5px 9px}

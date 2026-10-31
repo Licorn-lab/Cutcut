@@ -63,7 +63,8 @@ def worker(request):
     if request['action'] == 'batch':
         options = Options(**request['options'])
         run_batch(source, destination, options, emit=emit, cancel=cancel,
-                  restart=request.get('mode') == 'restart_all', continue_existing=True)
+                  restart=request.get('mode') in {'restart_all','restart_unapproved'}, continue_existing=True,
+                  restart_scope='unapproved' if request.get('mode')=='restart_unapproved' else 'all')
     elif request['action'] == 'retry':
         row = retry(BatchStore(destination, source), request['key'], request['revision'], request['model'])
         emit('done', {'status':row['status']})
@@ -139,6 +140,13 @@ class Workspace:
             if code:self.job.update(error='\n'.join(tail)[-1800:] or '任务未完成', message='任务失败，可修正后重试')
             self.process = None
 
+    def export_info(self, key, row):
+        if not row or not row.get('export'):return None
+        path=safe_path(self.destination,row['export'])
+        if not path.is_file():return None
+        return {'id':next((ident for ident,p in self.paths.items() if p.relative_to(self.source).as_posix()==key),None),
+                'name':path.name,'path':str(path),'relative':row['export']}
+
     def review_blocked(self):
         if not self.job['busy']:return set()
         request=getattr(self,'active_request',{})
@@ -146,8 +154,10 @@ class Workspace:
         blocked=set(plan['pending']) if plan else set()
         if request.get('action')=='retry':blocked.add(request['key'])
         # Before the restart worker writes its checkpoint, all old candidates are queued.
-        if request.get('mode')=='restart_all' and not plan and not self.job.get('progress'):
-            blocked.update(p.relative_to(self.source).as_posix() for p in self.paths.values())
+        if request.get('mode') in {'restart_all','restart_unapproved'} and not plan and not self.job.get('progress'):
+            rows={row['source']:row for row in self.store.entries()}
+            blocked.update(p.relative_to(self.source).as_posix() for p in self.paths.values()
+                           if request['mode']=='restart_all' or rows.get(p.relative_to(self.source).as_posix(),{}).get('status')!='approved')
         return blocked
 
     def reviewable(self, key, row, blocked=None, allow_unmasked=False):
@@ -271,25 +281,28 @@ def handler(workspace, token):
                     if parsed.path == '/api/item':
                         if workspace.edit_session and (workspace.edit_session['key']!=key or not row or workspace.edit_session['revision']!=row['revision']):workspace.edit_session=None
                         size=list(workspace.store.load_mask(row).size) if row and row.get('mask') else list(load_image(path).size)
-                        return self.send({'name':key,'rework_note':rework_note(row),'row':row,'dimensions':size,'reviewable':workspace.reviewable(key,row),'crop_canvas_dimensions':workspace.store.crop_frame_size(row or {},size),'adjusted_dimensions':workspace.store.result_size(row or {},size)})
+                        return self.send({'export':workspace.export_info(key,row),'name':key,'rework_note':rework_note(row),'row':row,'dimensions':size,'reviewable':workspace.reviewable(key,row),'crop_canvas_dimensions':workspace.store.crop_frame_size(row or {},size),'adjusted_dimensions':workspace.store.result_size(row or {},size)})
                     if parsed.path == '/api/crop-suggest':
                         workspace.require_reviewable(key)
                         if not row or row['revision']!=int(query.get('revision',['-1'])[0]):raise ValueError('候选已更新，请刷新后重试')
                         return self.send(workspace.store.suggest_crop(row))
                     if parsed.path == '/api/image':
-                        size = 240 if query.get('thumb') else 1800
+                        geometry_base=query.get('geometry_base')==['1'] and query.get('kind')==['result']
+                        size = 1000 if geometry_base else 240 if query.get('thumb') else 1800
                         if query.get('kind',['original'])[0] == 'result':
                             if not row or not row.get('mask'):raise ValueError('尚无候选图')
                             if row['revision'] != int(query.get('revision',['-1'])[0]):raise ValueError('候选已更新')
                             value=validate_geometry(json.loads(query['geometry'][0])) if query.get('geometry') else None
-                            image=workspace.store.preview_result(row,query.get('crop')==['1'],value,size,query.get('frame')==['1'])
+                            image=workspace.store.preview_result(row,query.get('crop')==['1'],value,size,query.get('frame')==['1'],geometry_base=geometry_base)
                         else:image = load_image(path)
                         if query.get('crop') == ['1'] and query.get('kind') != ['result']:
                             if not row or row['revision'] != int(query.get('revision',['-1'])[0]):raise ValueError('裁剪已更新，请刷新后重试')
                             workspace.store._validate_source(row)
                             if row.get('crop'):image = image.crop(tuple(row['crop']))
-                        image.thumbnail((size,size));buffer = io.BytesIO();image.convert('RGB').save(buffer,'JPEG',quality=88)
-                        return self.send(buffer.getvalue(),mime='image/jpeg')
+                        image.thumbnail((size,size));buffer = io.BytesIO()
+                        transparent=geometry_base or (query.get('kind')==['result'] and row.get('background')=='transparent')
+                        image.save(buffer,'PNG') if transparent else image.convert('RGB').save(buffer,'JPEG',quality=88)
+                        return self.send(buffer.getvalue(),mime='image/png' if transparent else 'image/jpeg')
                     return self.send({'error':'路径不存在'},404)
             except (ValueError, OSError, KeyError) as exc:self.send({'error':str(exc)},400)
 
@@ -304,7 +317,15 @@ def handler(workspace, token):
                         if workspace.process:workspace.process.terminate()
                         workspace.job['message'] = '正在停止，等待当前图片完成'
                         return self.send({'ok':True})
-                    if route in {'/api/edit','/api/crop','/api/geometry','/api/decide'}:
+                    if route == '/api/reveal-export':
+                        path=workspace.path(data['id']);key=path.relative_to(workspace.source).as_posix()
+                        info=workspace.export_info(key,workspace.store.get(key))
+                        if not info:raise ValueError('导出文件不存在，请重新确认导出')
+                        if data.get('relative')!=info['relative']:raise ValueError('导出位置已改变，请查看最新导出结果')
+                        # Resolve only a recorded export; client-supplied paths are never opened.
+                        subprocess.run(['open','-R',info['path']],check=True,capture_output=True)
+                        return self.send({'ok':True})
+                    if route in {'/api/edit','/api/crop','/api/geometry','/api/background','/api/decide'}:
                         path=workspace.path(data['id']);workspace.require_reviewable(path.relative_to(workspace.source).as_posix(),allow_unmasked=route=='/api/decide' and data.get('decision')=='redo')
                     else:workspace.idle()
                     if route == '/api/pick':
@@ -316,8 +337,11 @@ def handler(workspace, token):
                         options.validate()
                         if options.model not in ALLOWED:raise ValueError('模型未启用')
                         mode = data.get('mode','resume')
-                        if mode not in {'resume','restart_all'}:raise ValueError('批次操作无效')
-                        if mode == 'restart_all' and data.get('confirmed') is not True:raise ValueError('整批重做需要确认')
+                        if mode not in {'resume','restart_all','restart_unapproved'}:raise ValueError('批次操作无效')
+                        if mode in {'restart_all','restart_unapproved'} and data.get('confirmed') is not True:raise ValueError('整批重做需要确认')
+                        if mode=='restart_unapproved' and workspace.store:
+                            rows={row['source']:row for row in workspace.store.entries()}
+                            if not any(rows.get(p.relative_to(workspace.source).as_posix(),{}).get('status')!='approved' for p in workspace.paths.values()):raise ValueError('没有需要重做的未通过图片')
                         pending = workspace.store.restart_state() if workspace.store else None
                         if pending and mode == 'resume':options = Options(**pending['options'])
                         workspace.edit_session=None
@@ -334,8 +358,12 @@ def handler(workspace, token):
                             if workspace.edit_session and workspace.edit_session['key']==key:
                                 workspace.edit_session['revision']=row['revision']
                             return self.send({'row':row})
+                        elif route == '/api/background':
+                            row=workspace.store.save_background(key,int(data['revision']),data.get('background'))
+                            if workspace.edit_session and workspace.edit_session['key']==key:workspace.edit_session['revision']=row['revision']
+                            return self.send({'row':row})
                         elif route == '/api/geometry':
-                            row=workspace.store.save_geometry(key,int(data['revision']),data.get('geometry'))
+                            row=(workspace.store.reset_composition(key,int(data['revision'])) if data.get('reset_composition') is True else workspace.store.save_geometry(key,int(data['revision']),data.get('geometry')))
                             if workspace.edit_session and workspace.edit_session['key']==key:workspace.edit_session['revision']=row['revision']
                             return self.send({'row':row})
                         elif route == '/api/classify':raise ValueError('网页版已移除预分类，请直接开始抠图')
@@ -343,10 +371,11 @@ def handler(workspace, token):
                         elif route == '/api/decide':
                             row = workspace.store.get(key)
                             if not row:raise ValueError('尚无候选记录，请先生成候选')
-                            workspace.store.decide(key,int(data['revision']),data['decision'],str(data.get('reason','')),data.get('naming','original'),str(data.get('custom_name','')))
+                            row=workspace.store.decide(key,int(data['revision']),data['decision'],str(data.get('reason','')),data.get('naming','original'),str(data.get('custom_name','')))
+                            return self.send({'ok':True,'export':workspace.export_info(key,row)})
                         else:raise ValueError('接口不存在')
                     self.send({'ok':True})
-            except (ValueError, OSError, KeyError, TypeError) as exc:self.send({'error':str(exc)},400)
+            except (ValueError, OSError, KeyError, TypeError, subprocess.CalledProcessError) as exc:self.send({'error':str(exc)},400)
     return Handler
 
 
@@ -354,7 +383,7 @@ def main():
     token = secrets.token_urlsafe(32);workspace = Workspace()
     server = ThreadingHTTPServer(('127.0.0.1',0), handler(workspace,token))
     url = f'http://127.0.0.1:{server.server_port}/?token={token}'
-    print('WhiteFlow 已启动。关闭终端或按 Control+C 停止服务。',flush=True)
+    print('CutCut 已启动。关闭终端或按 Control+C 停止服务。',flush=True)
     webbrowser.open(url)
     try:server.serve_forever()
     except KeyboardInterrupt:pass

@@ -109,7 +109,7 @@ class TaskCardWindow:
         self.store = TaskCards(source)
         self.paths = collect_images(Path(source).resolve(), Path(destination).resolve(), recursive)
         if not self.paths:raise ValueError('没有可分类的图片')
-        self.window = tk.Toplevel(root); self.window.title('WhiteFlow · 预训练模型分类与任务卡')
+        self.window = tk.Toplevel(root); self.window.title('CutCut · 预训练模型分类与任务卡')
         self.window.geometry('1100x880');self.window.minsize(960,780)
         self.busy=False;self.stop_requested=False
         self.index = 0
@@ -183,7 +183,7 @@ class TaskCardWindow:
     def export_cards(self):
         if self.busy or not self.save():return
         from tkinter import filedialog
-        target=filedialog.asksaveasfilename(parent=self.window,title='导出本批任务卡',initialfile='WhiteFlow-任务卡.json',defaultextension='.json',filetypes=[('JSON','*.json')])
+        target=filedialog.asksaveasfilename(parent=self.window,title='导出本批任务卡',initialfile='CutCut-任务卡.json',defaultextension='.json',filetypes=[('JSON','*.json')])
         if not target:return
         try:
             self.store.export_drafts(self.paths,target)
