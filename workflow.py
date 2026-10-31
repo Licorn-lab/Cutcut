@@ -1,6 +1,8 @@
-"""Human review workflow. Candidate masks are lossless; final JPEGs require a decision."""
+"""Human review workflow. Candidate masks are lossless; final exports require a decision."""
 from __future__ import annotations
-import csv
+import re
+import hashlib
+from dataclasses import replace
 import fcntl
 import json
 import os
@@ -8,10 +10,10 @@ import sqlite3
 import tempfile
 import threading
 import uuid
-import unicodedata
-from contextlib import contextmanager
+from contextlib import contextmanager, closing
 from pathlib import Path
 from PIL import Image, ImageChops
+from image_geometry import validate_geometry, apply_geometry, geometry_size
 from core import (Options, VERSION, batch_cache, collect_images, digest, load_image,
                   EXTENSIONS, make_session, remove_background, render_white, inspect_cutout, save_image_atomic)
 
@@ -26,47 +28,133 @@ def safe_path(root, relative):
     return path
 
 
+def rework_note(row):
+    if not row or row.get('status') != 'redo' or not row.get('export'):return ''
+    name = Path(row['export']).stem
+    prefix = Path(row.get('export_name') or row['source']).stem + '_返工-'
+    return name[len(prefix):] if name.startswith(prefix) else ''
+
+
+def image_steps(row, frame=False, geometry=None):
+    """Ordered, lossless instructions; legacy records retain their original order."""
+    steps=list(row.get('image_steps', []))
+    if row.get('crop'):steps.append({'crop':row['crop']})
+    current={'geometry':validate_geometry(row.get('geometry'))}
+    if geometry is not None and row.get('output_crop'):
+        # A new adjustment starts with the already cropped result.
+        steps.extend([current, {'crop':row['output_crop']}, {'geometry':geometry}])
+    else:
+        steps.append({'geometry':geometry} if geometry is not None else current)
+        if row.get('output_crop') and not frame:steps.append({'crop':row['output_crop']})
+    return steps
+
+
+def steps_size(size, steps):
+    for step in steps:
+        if 'crop' in step:
+            x1,y1,x2,y2=step['crop'];size=(x2-x1,y2-y1)
+        else:size=geometry_size(size,step['geometry'])
+    return tuple(size)
+
+
+def apply_steps(image, steps, original_size=None):
+    size=original_size or image.size
+    for step in steps:
+        if 'crop' in step:
+            x1,y1,x2,y2=step['crop']
+            box=[round(x1*image.width/size[0]),round(y1*image.height/size[1]),
+                 round(x2*image.width/size[0]),round(y2*image.height/size[1])]
+            image=image.crop((box[0],box[1],max(box[0]+1,box[2]),max(box[1]+1,box[3])))
+            size=(x2-x1,y2-y1)
+        else:
+            image=apply_geometry(image,step['geometry']);size=geometry_size(size,step['geometry'])
+    return image
+
+
+def validate_background(value):
+    if not isinstance(value,str) or (value!='transparent' and not re.fullmatch(r'#[0-9a-fA-F]{6}',value)):
+        raise ValueError('请选择透明背景或有效的六位颜色值')
+    return value.lower()
+
+
+def apply_background(image, value='#ffffff'):
+    value=validate_background(value)
+    if value=='transparent':return image.convert('RGBA')
+    canvas=Image.new('RGBA',image.size,value);canvas.alpha_composite(image.convert('RGBA'))
+    return canvas.convert('RGB')
+
+
 class BatchStore:
     def __init__(self, destination, source=None):
         self.destination = Path(destination).resolve()
-        self.cache = batch_cache(self.destination) / 'human-review-v1'
-        self.cache.mkdir(parents=True, exist_ok=True)
-        self.masks = self.cache / 'masks'; self.masks.mkdir(exist_ok=True)
-        self.db = self.cache / 'review.sqlite3'
-        self.mutex = self.cache / 'store.lock'
-        if source is not None:
-            source = Path(source).resolve()
-            self.destination.mkdir(parents=True, exist_ok=True)
-            bad = [p.name for p in self.destination.iterdir() if p.name != '.DS_Store' and
-                   (p.name not in {'白底图','待重制'} or not p.is_dir() or p.is_symlink())]
-            if bad:
-                raise ValueError('新版需要新的空输出文件夹或本版已有批次；不会整理或删除旧版结果。')
-        with self.locked() as connection:
-            connection.execute('CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
-            connection.execute('CREATE TABLE IF NOT EXISTS items (key TEXT PRIMARY KEY, data TEXT NOT NULL)')
-            connection.execute('CREATE TABLE IF NOT EXISTS export_intents (key TEXT PRIMARY KEY, data TEXT NOT NULL)')
-            previous = connection.execute("SELECT value FROM metadata WHERE key='source'").fetchone()
-            if previous is None:
-                if source is None:
-                    raise ValueError('该位置没有本版审核记录，请先生成候选图')
-                if any(p.suffix.lower() in {'.jpg','.jpeg','.png'} for folder in ['白底图','待重制']
-                       if (self.destination / folder).exists() for p in (self.destination / folder).rglob('*')):
-                    raise ValueError('输出已有图片但审核记录不存在，请选择新的空输出位置')
-                connection.execute("INSERT INTO metadata VALUES ('source', ?)", (str(source),))
-                self.source = source
-            else:
-                self.source = Path(previous[0])
-                if source is not None and source != self.source:
-                    raise ValueError('这个输出位置属于另一批原图，请选择新的空输出位置')
-        for folder in ['白底图','待重制']:
-            (self.destination / folder).mkdir(exist_ok=True)
+        self.shared_cache = batch_cache(self.destination) / 'human-review-v1'
+        self.shared_cache.mkdir(parents=True, exist_ok=True)
+        self.mutex = self.shared_cache / 'store.lock'
+        source = Path(source).resolve() if source is not None else None
+        self.destination.mkdir(parents=True, exist_ok=True)
+        for folder in ('白底图', '待重制'):
+            path = self.destination / folder
+            if path.is_symlink() or (path.exists() and not path.is_dir()):
+                raise ValueError('输出子目录不能是文件或符号链接：' + folder)
+            path.mkdir(exist_ok=True)
+        # One output lock protects every batch, including naming and export recovery.
+        with self.mutex.open('a+') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            legacy = self.shared_cache / 'review.sqlite3'
+            previous = None
+            if legacy.exists():
+                with closing(sqlite3.connect(legacy)) as c:
+                    previous = c.execute("SELECT value FROM metadata WHERE key='source'").fetchone()
+            if source is None:
+                if not previous:raise ValueError('该位置没有本版审核记录，请先生成候选图')
+                source = Path(previous[0])
+            self.source = source
+            self.batch_id = hashlib.sha256(str(source).encode()).hexdigest()[:20]
+            self.cache = (self.shared_cache if not previous or Path(previous[0]) == source
+                          else self.shared_cache / 'sources' / self.batch_id)
+            self.cache.mkdir(parents=True, exist_ok=True)
+            self.masks = self.cache / 'masks'; self.masks.mkdir(exist_ok=True)
+            self.db = self.cache / 'review.sqlite3'
+            with closing(sqlite3.connect(self.db)) as c, c:
+                c.execute('CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+                c.execute('CREATE TABLE IF NOT EXISTS items (key TEXT PRIMARY KEY, data TEXT NOT NULL)')
+                c.execute('CREATE TABLE IF NOT EXISTS export_intents (key TEXT PRIMARY KEY, data TEXT NOT NULL)')
+                c.execute("INSERT OR IGNORE INTO metadata VALUES ('source', ?)", (str(source),))
+                saved = c.execute("SELECT value FROM metadata WHERE key='source'").fetchone()[0]
+                if saved != str(source):raise ValueError('审核记录与原图目录不匹配')
+            fcntl.flock(lock, fcntl.LOCK_UN)
         with self.locked() as c:self._recover(c)
+        self._retire_legacy_notes()
+
+    def _retire_legacy_notes(self):
+        # Move old rework notes to filenames before removing legacy text fields.
+        # Processing settings, masks and crop coordinates remain available for resume.
+        for row in self.entries():
+            if row.get('status') == 'redo' and row.get('human'):
+                try:
+                    row = self.decide(row['source'], row['revision'], 'redo', row['human'],
+                                      'custom', row.get('export_name') or self._export_filename(row['source']))
+                except (OSError, ValueError) as exc:
+                    raise ValueError('旧返工备注暂未迁移，已保留原记录：' + str(exc)) from exc
+            if 'human' in row or 'task_context' in row:
+                with self.locked() as c:
+                    current = self._get(c, row['source'])
+                    if current:self._put(c, current)
+        with self.locked() as c:
+            report = c.execute("SELECT value FROM metadata WHERE key='report'").fetchone()
+            if report and Path(report[0]).name == report[0] and report[0].startswith('重制原因') and report[0].endswith('.csv'):
+                path = safe_path(self.destination/'待重制', report[0])
+                if path.is_file() and path.read_text(encoding='utf-8-sig').startswith('原图相对路径,自动提示,人工原因,'):
+                    path.unlink()
+                c.execute("DELETE FROM metadata WHERE key='report'")
 
     @contextmanager
     def locked(self):
         with self.mutex.open('a+') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             connection = sqlite3.connect(self.db, timeout=30)
+            connection.execute('ATTACH DATABASE ? AS output_registry', (str(self.shared_cache/'exports.sqlite3'),))
+            connection.execute('CREATE TABLE IF NOT EXISTS output_registry.paths (path TEXT PRIMARY KEY, owner TEXT NOT NULL)')
             try:
                 with connection:
                     yield connection
@@ -79,6 +167,8 @@ class BatchStore:
         return json.loads(row[0]) if row else None
 
     def _put(self, connection, row):
+        row.pop('human', None)
+        row.pop('task_context', None)
         connection.execute('INSERT OR REPLACE INTO items VALUES (?, ?)',
                            (row['source'], json.dumps(row, ensure_ascii=False)))
 
@@ -163,19 +253,8 @@ class BatchStore:
         with Image.open(path) as image:return image.convert('L')
 
     def _report(self, connection):
-        rows = [json.loads(r[0]) for r in connection.execute('SELECT data FROM items ORDER BY key')]
-        folder = self.destination / '待重制'
-        fd, tmp = tempfile.mkstemp(prefix='.report-', dir=folder)
-        try:
-            with os.fdopen(fd, 'w', encoding='utf-8-sig', newline='') as stream:
-                writer = csv.writer(stream)
-                writer.writerow(['原图相对路径','自动提示','人工原因','重制图片路径（相对输出位置）','处理错误'])
-                for row in rows:
-                    if row['status'] == 'redo':
-                        writer.writerow([row['source'],row.get('automatic',''),row.get('human',''),row.get('export') or '',row.get('error','')])
-            os.replace(tmp, folder / '重制原因.csv')
-        finally:
-            if os.path.exists(tmp):os.unlink(tmp)
+        # Kept as a recovery checkpoint; notes are carried only by export filenames.
+        pass
 
     def prepare(self, key, source_hash, options, revision=None, override_base=None):
         """Invalidates an old decision before inference; no mask is exposed while processing."""
@@ -185,8 +264,8 @@ class BatchStore:
             if old:self._retire_export(old)
             row = {'source':key,'source_hash':source_hash,'options':vars(options),
                    'config':options.signature(),'status':'processing','revision':(old or {}).get('revision',0)+1,
-                   'automatic':'','human':'','error':'','mask':None,'base_mask':None,'export':None,'export_hash':None,
-                   'override_base':override_base}
+                   'automatic':'','error':'','mask':None,'base_mask':None,'export':None,'export_hash':None,
+                   'override_base':override_base,'export_name':(old or {}).get('export_name')}
             self._put(c,row);c.commit();self._report(c);self._gc(c)
             return row
 
@@ -198,6 +277,24 @@ class BatchStore:
                            status='pending',automatic=automatic,error='',routing=routing)
             self._put(c,current);c.commit();self._report(c);self._gc(c)
             return current
+
+    def accept_cloud_mask(self, key, revision, mask):
+        """Atomically promote a reviewed cloud mask while invalidating old edits."""
+        with self.locked() as c:
+            row=self._get(c,key);self._assert_revision(row,revision);self._validate_source(row)
+            if row['status']=='processing':raise ValueError('图片正在处理')
+            original=load_image(safe_path(self.source,key))
+            if mask.size != original.size:raise ValueError('云端蒙版尺寸不匹配')
+            self._owned_export(row)
+            name,checksum=self._write_mask(mask)
+            self._retire_export(row)
+            for field in ('crop','output_crop','geometry','image_steps'):
+                row.pop(field,None)
+            row.update(mask=name,mask_hash=checksum,base_mask=name,base_hash=checksum,
+                       status='pending',revision=row['revision']+1,error='',automatic='',
+                       routing={'selected':'tencent-cloud','reason':'人工选用云端候选'})
+            self._put(c,row);c.commit();self._report(c);self._gc(c)
+            return row
 
     def fail(self, row, error):
         with self.locked() as c:
@@ -243,8 +340,61 @@ class BatchStore:
             if mask.size != original.size:raise ValueError('编辑蒙版必须与原图尺寸相同')
             name,checksum=self._write_mask(mask)
             self._retire_export(row)
-            row.update(mask=name,mask_hash=checksum,human=human,status='editing',revision=row['revision']+1,error='')
+            row.update(mask=name,mask_hash=checksum,status='editing',revision=row['revision']+1,error='')
             self._put(c,row);c.commit();self._report(c);self._gc(c);return row
+
+    def crop_frame_size(self, row, size=None):
+        return steps_size(size or self.load_mask(row).size,image_steps(row,frame=True))
+
+    def result_size(self, row, size=None):
+        return steps_size(size or self.load_mask(row).size,image_steps(row))
+
+    def save_crop(self, key, revision, box, space='source'):
+        if space not in {'source','adjusted'}:raise ValueError('裁剪坐标系无效')
+        with self.locked() as c:
+            row=self._get(c,key);self._assert_revision(row,revision);self._validate_source(row)
+            mask=self.load_mask(row)
+            if row['status']=='processing':raise ValueError('图片正在处理')
+            width,height=self.crop_frame_size(row,mask.size) if space=='adjusted' else mask.size
+            if box is not None:
+                if not isinstance(box,list) or len(box)!=4 or any(type(v)!=int for v in box):raise ValueError('裁剪范围无效')
+                x1,y1,x2,y2=box
+                if not (0<=x1<x2<=width and 0<=y1<y2<=height):raise ValueError('裁剪范围超出图片')
+            field='output_crop' if space=='adjusted' else 'crop'
+            if row.get(field)==box and not (box is None and (row.get('crop') or row.get('output_crop'))):return row
+            self._retire_export(row)
+            row[field]=box
+            if space=='source':row.pop('output_crop',None)
+            if box is None:row.pop('crop',None);row.pop('output_crop',None)
+            row.update(status='editing',revision=row['revision']+1,error='')
+            self._put(c,row);c.commit();self._report(c);return row
+
+    def save_geometry(self, key, revision, value):
+        value=validate_geometry(value)
+        with self.locked() as c:
+            row=self._get(c,key);self._assert_revision(row,revision);self._validate_source(row)
+            self.load_mask(row)
+            if row['status']=='processing':raise ValueError('图片正在处理')
+            if (not row.get('output_crop') and validate_geometry(row.get('geometry'))==value) or (row.get('output_crop') and value==validate_geometry(None)):return row
+            steps=image_steps(row) if row.get('output_crop') else None
+            if steps and len(steps)>64:raise ValueError('本张调整次数较多，请恢复初始构图后继续编辑')
+            self._retire_export(row)
+            if steps:
+                row['image_steps']=steps
+                row.pop('crop',None);row.pop('output_crop',None)
+            # Earlier crops/adjustments stay in order; only the last adjustment is editable.
+            row.update(geometry=value,status='editing',revision=row['revision']+1,error='')
+            self._put(c,row);c.commit();self._report(c);return row
+
+    def reset_composition(self, key, revision):
+        with self.locked() as c:
+            row=self._get(c,key);self._assert_revision(row,revision);self._validate_source(row);self.load_mask(row)
+            if row['status']=='processing':raise ValueError('图片正在处理')
+            if not any(row.get(k) for k in ('image_steps','crop','output_crop','geometry')):return row
+            self._retire_export(row)
+            for field in ('image_steps','crop','output_crop','geometry'):row.pop(field,None)
+            row.update(status='editing',revision=row['revision']+1,error='')
+            self._put(c,row);c.commit();self._report(c);return row
 
     def preview(self, row, mask=None):
         original=load_image(self._validate_source(row))
@@ -255,17 +405,83 @@ class BatchStore:
         canvas=Image.new('RGBA',original.size,'white');canvas.alpha_composite(cutout)
         return original,canvas.convert('RGB')
 
-    def _export_filename(self,key):
-        path=Path(key)
-        folded=lambda text:unicodedata.normalize('NFC',text).casefold()
-        parent=safe_path(self.source,key).parent
-        conflicts=[other.name for other in parent.iterdir() if other.is_file()
-                   and other.suffix.lower() in EXTENSIONS and other.name!=path.name
-                   and folded(other.stem)==folded(path.stem)]
-        if conflicts:raise ValueError('导出命名冲突：'+path.name+' 与 '+ '、'.join(conflicts)+' 同名。请先为原图设置不同文件名，再生成并审核；不会覆盖。')
-        return path.stem+'w.jpg'
+    def save_background(self, key, revision, value):
+        value=validate_background(value)
+        with self.locked() as c:
+            row=self._get(c,key);self._assert_revision(row,revision);self._validate_source(row);self.load_mask(row)
+            if row['status']=='processing':raise ValueError('图片正在处理')
+            if row.get('background','#ffffff')==value:return row
+            self._retire_export(row)
+            row.update(background=value,status='editing',revision=row['revision']+1,error='')
+            self._put(c,row);c.commit();self._report(c);return row
 
-    def decide(self, key, revision, decision, human):
+    def preview_result(self, row, crop=False, geometry=None, limit=1800, frame=False, geometry_base=False):
+        image=load_image(self._validate_source(row));mask=self.load_mask(row)
+        if image.size!=mask.size:raise ValueError('蒙版尺寸与原图不一致')
+        size=image.size
+        image.thumbnail((limit,limit))
+        if mask.size!=image.size:mask=mask.resize(image.size,Image.Resampling.LANCZOS)
+        image.putalpha(ImageChops.multiply(mask,image.getchannel('A')))
+        if geometry_base:
+            # Browser transforms this RGBA base live; use the same ordered history as save.
+            return apply_steps(image,image_steps(row,True,validate_geometry(None)),size)
+        if crop:image=apply_steps(image,image_steps(row,frame,geometry),size)
+        return apply_background(image,row.get('background','#ffffff'))
+
+    def suggest_crop(self, row):
+        self._validate_source(row)
+        mask=self.load_mask(row);native_size=mask.size
+        size=self.crop_frame_size(row,mask.size)
+        mask.thumbnail((1800,1800))
+        image=Image.new('RGBA',mask.size);image.putalpha(mask)
+        adjusted=apply_steps(image,image_steps(row,frame=True),native_size).getchannel('A')
+        box=adjusted.point(lambda v:255 if v>8 else 0).getbbox()
+        if not box:raise ValueError('没有可裁剪的主体，请先修整图片')
+        import math
+        width,height=size;pad=max(3,round(max(size)*.005))
+        return {'box':[max(0,math.floor(box[0]*width/adjusted.width)-pad),
+                       max(0,math.floor(box[1]*height/adjusted.height)-pad),
+                       min(width,math.ceil(box[2]*width/adjusted.width)+pad),
+                       min(height,math.ceil(box[3]*height/adjusted.height)+pad)],'dimensions':size}
+
+    def _export_filename(self, key):
+        return Path(key).stem + '.jpg'
+
+    def _allocate_export(self, c, row, folder, naming='original', custom_name='', note='', extension='.jpg'):
+        owner = self.batch_id + ':' + row['source']
+        if naming not in {'original', 'custom'}:raise ValueError('导出命名方式无效')
+        if naming == 'custom':
+            stem = str(custom_name).strip()
+            stem=re.sub(r'\.(?:jpe?g|png)$','',stem,flags=re.I)
+            if not stem or stem in {'.', '..'} or re.search(r'[\\/:*?"<>|\x00-\x1f\x7f]', stem) or stem.endswith('.'):
+                raise ValueError('自定义名称不能为空，也不能包含路径或特殊字符')
+        else:stem = Path(row['source']).stem
+        # Notes never become a path or a separate persisted field.
+        text = re.sub(r'[\\/:*?"<>|\x00-\x1f\x7f]+', '_', str(note))
+        text = re.sub(r'\s+', ' ', text).strip(' ._')
+        if str(note).strip() and not text:raise ValueError('请输入有效的返工备注')
+        suffix = '_返工-' + text if text else ''
+        index = 1
+        while True:
+            base = stem + ('' if index == 1 else '_' + str(index))
+            name = base + suffix + extension
+            if len(name.encode('utf-8')) > 240:raise ValueError('导出名称过长，请缩短名称或返工备注')
+            relative = (Path(folder)/Path(row['source']).parent/name).as_posix()
+            target = safe_path(self.destination, relative)
+            claim = c.execute('SELECT owner FROM output_registry.paths WHERE path=?', (relative,)).fetchone()
+            own = row.get('export') == relative and target.is_file() and digest(target) == row.get('export_hash')
+            if (not claim or claim[0] == owner) and (not target.exists() or own):
+                c.execute('INSERT OR REPLACE INTO output_registry.paths VALUES (?,?)', (relative,owner))
+                return relative, base + extension
+            index += 1
+
+    def restart_state(self):
+        with self.locked() as c:
+            value = c.execute("SELECT value FROM metadata WHERE key='restart'").fetchone()
+            return json.loads(value[0]) if value else None
+
+
+    def decide(self, key, revision, decision, human='', naming='original', custom_name=''):
         if decision not in {'approved','redo'}:raise ValueError('审核决定无效')
         with self.locked() as c:
             row=self._get(c,key);self._assert_revision(row,revision)
@@ -273,28 +489,39 @@ class BatchStore:
             if decision=='approved' and not row.get('mask'):raise ValueError('没有候选图，不能确认通过')
             old=self._owned_export(row)
             export=None;checksum=None
-            if row.get('mask'):
-                original=load_image(self._validate_source(row));alpha=self.load_mask(row)
-                cutout=original.copy();cutout.putalpha(ImageChops.multiply(alpha,original.getchannel('A')))
-                if decision=='approved':white,_=render_white(cutout,Options(**row['options']))
+            if row.get('mask') or decision == 'redo':
+                try:original=load_image(self._validate_source(row))
+                except OSError as exc:raise ValueError('原图无法解码，不能导出返工图片；请检查原文件') from exc
+                cutout=original.copy()
+                if row.get('mask'):
+                    alpha=self.load_mask(row)
+                    cutout.putalpha(ImageChops.multiply(alpha,original.getchannel('A')))
+                if decision=='approved':
+                    cutout=apply_steps(cutout,image_steps(row))
+                    background=row.get('background','#ffffff')
+                    if any('crop' in step for step in image_steps(row)):
+                        white=apply_background(cutout,background)
+                    else:white,_=render_white(cutout,Options(**row['options']),background=background)
                 else:
                     white=Image.new('RGBA',original.size,'white');white.alpha_composite(cutout);white=white.convert('RGB')
                 folder='白底图' if decision=='approved' else '待重制'
-                export=(Path(folder)/Path(key).parent/self._export_filename(key)).as_posix()
+                extension='.png' if decision=='approved' and row.get('background')=='transparent' else '.jpg'
+                export, export_name = self._allocate_export(c, row, folder, naming, custom_name, human if decision == 'redo' else '',extension)
                 target=safe_path(self.destination,export)
                 if target.exists() and (row.get('export')!=export or digest(target)!=row.get('export_hash')):
                     raise ValueError('目标位置已有非本次生成或被修改的文件，请移走后再导出')
                 # Validation happens on a staged file; a failed write cannot destroy an existing result.
-                staging=self.cache/('export-'+uuid.uuid4().hex+'.jpg')
+                staging=self.cache/('export-'+uuid.uuid4().hex+extension)
                 try:
-                    save_image_atomic(white,staging,'JPEG',quality=100,subsampling=0)
+                    save_image_atomic(white,staging,'PNG' if extension=='.png' else 'JPEG',**({} if extension=='.png' else {'quality':100,'subsampling':0}))
                     with Image.open(staging) as saved:
                         saved.load()
                         if saved.size != white.size:raise ValueError('导出文件尺寸异常，已保留候选和编辑成果')
                     checksum=digest(staging)
                     if digest(safe_path(self.source,key))!=row['source_hash']:raise ValueError('导出时原图发生变化，请重新生成')
                     finished=dict(row)
-                    finished.update(status=decision,human=human,export=export,export_hash=checksum,revision=row['revision']+1)
+                    finished.pop('human', None);finished.pop('task_context', None)
+                    finished.update(status=decision,export=export,export_name=export_name,export_naming=naming,export_hash=checksum,revision=row['revision']+1)
                     intent={'row':finished,'staging':staging.name,'old_export':row.get('export'),'old_hash':row.get('export_hash')}
                     c.execute('INSERT OR REPLACE INTO export_intents VALUES (?,?)',(key,json.dumps(intent,ensure_ascii=False)))
                     c.commit()
@@ -305,27 +532,53 @@ class BatchStore:
                     outstanding=c.execute('SELECT 1 FROM export_intents WHERE key=?',(key,)).fetchone()
                     if staging.exists() and not outstanding:staging.unlink()
             elif decision=='redo' and old and old.exists():old.unlink()
-            row.update(status=decision,human=human,export=export,export_hash=checksum,revision=row['revision']+1)
+            row.update(status=decision,export=export,export_hash=checksum,revision=row['revision']+1)
             self._put(c,row);c.commit();self._report(c);self._gc(c);return row
 
 
-def run_batch(source,destination,options=None,emit=None,cancel=None,session_factory=make_session,remover=remove_background):
+def run_batch(source,destination,options=None,emit=None,cancel=None,session_factory=make_session,remover=remove_background,task_contexts=None,image_keys=None,restart=False,continue_existing=False,restart_scope="all"):
+    if restart_scope not in {"all","unapproved"}:raise ValueError("重做范围无效")
     options=options or Options();options.validate()
     if options.white_format!='jpg':raise ValueError('人工审核版最终输出固定为 JPG')
     emit=emit or (lambda event,value:None);cancel=cancel or threading.Event()
     source=Path(source).resolve();destination=Path(destination).resolve()
     images=collect_images(source,destination,options.recursive)
-    if not images:raise ValueError('原图位置没有支持的静态图片')
+    if image_keys is not None:
+        selected=set(image_keys)
+        images=[path for path in images if path.relative_to(source).as_posix() in selected]
+    if not images:raise ValueError('本次分组没有可处理的图片')
     store=BatchStore(destination,source)
     lock=(store.cache/'batch.lock').open('a+')
     try:
         try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError as exc:raise ValueError('该批次正在生成候选，请勿重复启动') from exc
+        with store.locked() as c:
+            saved = c.execute("SELECT value FROM metadata WHERE key='restart'").fetchone()
+            restart_plan = json.loads(saved[0]) if saved else None
+            if restart:
+                approved = {key for key,data in c.execute('SELECT key,data FROM items') if json.loads(data).get('status')=='approved'}
+                targets = [p.relative_to(source).as_posix() for p in images if restart_scope=='all' or p.relative_to(source).as_posix() not in approved]
+                if not targets:raise ValueError('没有需要重做的未通过图片')
+                restart_plan = {'options':vars(options), 'pending':targets, 'scope':restart_scope}
+                c.execute("INSERT OR REPLACE INTO metadata VALUES ('restart', ?)", (json.dumps(restart_plan),))
+            if restart_plan:
+                options = Options(**restart_plan['options'])
+                pending = set(restart_plan['pending'])
+                images = [p for p in images if p.relative_to(source).as_posix() in pending]
         stats={'total':len(images),'success':0,'skipped':0,'failed':0,'review':0,'auto_pass':0,'cancelled':False}
         emit('total',len(images));sessions={}
         for index,path in enumerate(images,1):
             if cancel.is_set():stats['cancelled']=True;break
             key=path.relative_to(source).as_posix();emit('status',f'{index}/{len(images)} · {key}')
+            # A user may approve a completed candidate while another image is running.
+            if restart_plan and restart_plan.get('scope')=='unapproved':
+                latest=store.get(key)
+                if latest and latest.get('status')=='approved':
+                    restart_plan['pending'].remove(key)
+                    with store.locked() as c:
+                        if restart_plan['pending']:c.execute("UPDATE metadata SET value=? WHERE key='restart'",(json.dumps(restart_plan),))
+                        else:c.execute("DELETE FROM metadata WHERE key='restart'")
+                    stats['skipped']+=1;emit('progress',index);continue
             try:source_hash=digest(path)
             except OSError as exc:
                 row=store.prepare(key,None,options);row=store.fail(row,f'原图无法读取：{exc}')
@@ -334,18 +587,33 @@ def run_batch(source,destination,options=None,emit=None,cancel=None,session_fact
                 continue
             old=store.get(key)
             effective=options
-            if options.resume and old and old.get('override_base')==options.signature():
+            context=(task_contexts or {}).get(key)
+            if context is not None:
+                from task_cards import context_hash, MODELS as TASK_MODELS
+                if context.get('sha256')!=source_hash:raise ValueError('任务卡原图已改变，请重新打开任务卡')
+                chosen=context.get('model') or options.model
+                if chosen not in set(TASK_MODELS.values())-{'',}:raise ValueError('任务卡模型未启用')
+                effective=replace(options,model=chosen,task_context_hash=context_hash(context))
+            # Web “continue” preserves completed candidates, even if controls changed.
+            # Only the explicit confirmed restart replaces the whole batch.
+            if continue_existing and not restart_plan and old and old.get('options') and (task_contexts is None or old.get('task_context') == context):
+                previous_options = Options(**old['options'])
+                if store.resumable(old,source_hash,previous_options):effective = previous_options
+            base_options=effective
+            if options.resume and not restart_plan and old and old.get('override_base')==base_options.signature():
                 effective=Options(**old['options'])
-            if options.resume and store.resumable(old,source_hash,effective):
+            if options.resume and not restart_plan and store.resumable(old,source_hash,effective):
                 row=old;stats['skipped']+=1
             else:
-                row=store.prepare(key,source_hash,effective,old['revision'] if old else None,old.get('override_base') if old and effective is not options else None)
+                row=store.prepare(key,source_hash,effective,old['revision'] if old else None,old.get('override_base') if old and effective is not base_options else None)
                 try:
                     original=load_image(path)
                     session=sessions.get(effective.model)
                     if session is None:
                         emit('status','正在准备本地模型，首次使用需下载；进度显示在终端')
                         try:
+                            session=None
+                            sessions.clear()  # Keep only one model session in memory.
                             session=session_factory(effective.model);sessions[effective.model]=session
                         except Exception as exc:
                             store.fail(row,f'模型准备失败：{exc}')
@@ -371,6 +639,12 @@ def run_batch(source,destination,options=None,emit=None,cancel=None,session_fact
                     row=store.fail(row,f'{type(exc).__name__}: {exc}');stats['failed']+=1
                 if row['status']=='failed':emit('log',f"失败：{key} · {row['error']}")
             if row['status'] not in {'approved','redo'}:stats['review']+=1
+            if restart_plan and row['status'] != 'failed':
+                restart_plan['pending'].remove(key)
+                with store.locked() as c:
+                    if restart_plan['pending']:
+                        c.execute("UPDATE metadata SET value=? WHERE key='restart'", (json.dumps(restart_plan),))
+                    else:c.execute("DELETE FROM metadata WHERE key='restart'")
             emit('row',row);emit('progress',index)
         with store.locked() as c:store._report(c)
         emit('done',stats);return stats

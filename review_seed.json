@@ -1,0 +1,673 @@
+{
+  "schema": "whiteflow-review/v1",
+  "exportedAt": "2026-10-22T12:01:56.834465+00:00",
+  "samples": [
+    {
+      "id": "01",
+      "sha256": "20b0fc36ffba00530d7bfea8c8c2cae241bca2fdc86f32244b705a18fd7f1721",
+      "source": "/Volumes/李雨轩/新选侗锦产品图片（背景干净:不干净）/背景干净/IMG_0578.jpg",
+      "normalized_copy_sha256": "7b390c7c8ee9d25a2476cb95d25d849c9ca8791ba000d288f96aec267d06064f"
+    },
+    {
+      "id": "02",
+      "sha256": "2a236bba5a32e61c007547a6837d161cb1dd0359c2bb663d0a5d09e9d6ae4807",
+      "source": "/Volumes/李雨轩/新选侗锦产品图片（背景干净:不干净）/背景干净/IMG_0616.jpg",
+      "normalized_copy_sha256": "81f316de8ab3e4195773e6c712e1ac100172fd40926e3fa291e31c06694633c8"
+    },
+    {
+      "id": "03",
+      "sha256": "a9924f0e3fc19e998207d1474278bb668166ac8efaed4357ee556cf350be31c4",
+      "source": "/Volumes/李雨轩/新选侗锦产品图片（背景干净:不干净）/背景干净/IMG_0572.jpg",
+      "normalized_copy_sha256": "311d94133686db45080636a4d989e064fc0a9f3773cfb6775fb158d6bb10ef91"
+    },
+    {
+      "id": "04",
+      "sha256": "332fd175f0b2dc65fca6d1c0af31a9745365a87761231fdba65d19d9088c6d61",
+      "source": "/Volumes/李雨轩/新选侗锦产品图片（背景干净:不干净）/背景干净/IMG_4893.jpg",
+      "normalized_copy_sha256": "1c4d01fa389b8cb5c2dc689d8b8839884934d0aa15dc4e3c3ba97c1af1bdb593"
+    },
+    {
+      "id": "05",
+      "sha256": "bd7445517acf7184b2f4bf20257165c656926ba03ccf733e99ae242b8aaa91a8",
+      "source": "/Volumes/李雨轩/新选侗锦产品图片（背景干净:不干净）/背景干净/IMG_0457.jpg",
+      "normalized_copy_sha256": "7322bccce6877cd56492444b69a2513022cd3898176eaadc89249d21dff9fb9d"
+    },
+    {
+      "id": "06",
+      "sha256": "52fd6eac6adad6fbd5d736c0cc1107adc0a08c4d4c2ce3a8092b6a35c2ef5c7b",
+      "source": "/Volumes/李雨轩/新选侗锦产品图片（背景干净:不干净）/背景干净/IMG_4879.jpg",
+      "normalized_copy_sha256": "b084faedb2667a8b37330f917f0ec861698ae9b9256f66fd8973bb6dedd987a3"
+    },
+    {
+      "id": "07",
+      "sha256": "988c31655493c7aa4c7f421efde52551bebfbf5b751ff8eb88d6b173ac2a8a02",
+      "source": "/Volumes/李雨轩/新选侗锦产品图片（背景干净:不干净）/背景干净/P1040866.JPG",
+      "normalized_copy_sha256": "31f3140c0e477a8f178abdc7247ea2d53ed1de06a87901c77f0bb9683f4a28c3"
+    },
+    {
+      "id": "08",
+      "sha256": "2ae441d3a0a767f70a4cb40fd89fd7f813fbfd8a5ac77dd168c8f39ee2adfa94",
+      "source": "/Volumes/李雨轩/新选侗锦产品图片（背景干净:不干净）/背景不干净/IMG_0570.jpg",
+      "normalized_copy_sha256": "46c8fc70354b2e70bd97385853e45e4c978ab4f97d2e18b57361655294b8d5d7"
+    },
+    {
+      "id": "09",
+      "sha256": "9b63b410a24ba7e6a0c123915d05a6311a39cce51b2e9677195ef090c3a255dd",
+      "source": "/Volumes/李雨轩/新选侗锦产品图片（背景干净:不干净）/背景不干净/DSCN1648.JPG",
+      "normalized_copy_sha256": "61784fd367d2c3b77d4dbbd171727624917faefacfc562372234f5f556e5c452"
+    },
+    {
+      "id": "10",
+      "sha256": "a8ad3e4414308cfd33231f0da8a698efbc3a842a9340617441c6b604b9862f4c",
+      "source": "/Volumes/李雨轩/新选侗锦产品图片（背景干净:不干净）/背景不干净/IMG_6254.jpg",
+      "normalized_copy_sha256": "a03207f95faddb8d7ef013209c2caec669ceaedee62a1878c83e45a118afdab9"
+    },
+    {
+      "id": "11",
+      "sha256": "0aede333e5189f89f0679369d32369238be4d623c7f6f7277274e71e8e5933ab",
+      "source": "/Volumes/李雨轩/新选侗锦产品图片（背景干净:不干净）/背景不干净/DSC_0335.JPG",
+      "normalized_copy_sha256": "d5a5bff397fbb79458fc4e7b61cae472d65261bc14b84acf59e5839f315d847b"
+    },
+    {
+      "id": "12",
+      "sha256": "8501c352e82bf8f91fd047ed7df464bd691bf9f903d613f52a17466fa87e4afd",
+      "source": "/Volumes/李雨轩/枫香博物馆老物件/BWG dj25.JPG",
+      "normalized_copy_sha256": "959b1b05eb91e30257d03a9e3ec699766eeeef02db196c3b44075d2373660c54"
+    },
+    {
+      "id": "13",
+      "sha256": "a6ca251cbf030a5f355818dc093dcf6c9e51552591b787c6dcff2750f25dcde8",
+      "source": "/Volumes/李雨轩/枫香博物馆老物件/BWG dj20.JPG",
+      "normalized_copy_sha256": "b3271b166bab11a8c5839e53f6255cbe3f8faf2f10fffaefef4ccc87e06f0186"
+    },
+    {
+      "id": "14",
+      "sha256": "afcf4f62bb403f79b0223f7af9ef25c88926309f524239760f1ac0bd1086a5a2",
+      "source": "/Volumes/李雨轩/枫香博物馆老物件/BWG dj47.JPG",
+      "normalized_copy_sha256": "5b749e1028e7c8c1d12084332aa3a5aebc298e9c75f199d8c39aa615e145ceca"
+    },
+    {
+      "id": "15",
+      "sha256": "8f885b068ed5aa37b71c0fcd9eec38498a81b3d25e53f9c425e8af35021b72cf",
+      "source": "/Volumes/李雨轩/实拍图/侗锦/8/165通道牙屯堡侗族八角花纹侗锦.jpg",
+      "normalized_copy_sha256": "61a77789c7626bacfa96d89a650bbf403b848e2b721dc4ee8d60fab0e8e4ac2f"
+    },
+    {
+      "id": "16",
+      "sha256": "836bf59f8350ea188cea8c19e4ac1edcc722468e3499f900305abf45ec9c090f",
+      "source": "/Volumes/李雨轩/实拍图/侗锦/14/199通道播阳镇侗族桃花纹侗绣围腰.jpg",
+      "normalized_copy_sha256": "9c7b7fea9ac64fb747445ff5cd8415c416e9075447bfc1ab5020ed013f2c0a14"
+    }
+  ],
+  "records": {
+    "10": {
+      "features": [
+        "流苏与细带",
+        "复杂背景",
+        "常规完整主体"
+      ],
+      "featuresConfirmed": true,
+      "scope": {
+        "hook": "pending",
+        "card": "pending"
+      },
+      "models": {
+        "u2netp": {
+          "status": "reject",
+          "issues": []
+        },
+        "isnet-general-use": {
+          "status": "reject",
+          "issues": []
+        },
+        "u2net": {
+          "status": "reject",
+          "issues": []
+        },
+        "birefnet-general": {
+          "status": "pass",
+          "issues": []
+        }
+      },
+      "preferred": "birefnet-general",
+      "notes": "",
+      "confirmed": true,
+      "updatedAt": "2026-10-22T11:43:38.998Z"
+    },
+    "11": {
+      "features": [
+        "流苏与细带",
+        "复杂背景",
+        "常规完整主体",
+        "镂空与间隙"
+      ],
+      "featuresConfirmed": true,
+      "scope": {
+        "hook": "pending",
+        "card": "pending"
+      },
+      "models": {
+        "u2netp": {
+          "status": "reject",
+          "issues": [
+            "背景残留"
+          ]
+        },
+        "isnet-general-use": {
+          "status": "reject",
+          "issues": [
+            "背景残留"
+          ]
+        },
+        "u2net": {
+          "status": "pass",
+          "issues": []
+        },
+        "birefnet-general": {
+          "status": "reject",
+          "issues": []
+        }
+      },
+      "preferred": "u2net",
+      "notes": "用户补充确认：可以去掉吊带，只保留包身。此要求仅适用于本张图片。",
+      "confirmed": true,
+      "updatedAt": "2026-10-22T12:01:56.834465+00:00"
+    },
+    "12": {
+      "features": [
+        "流苏与细带",
+        "常规完整主体",
+        "镂空与间隙"
+      ],
+      "featuresConfirmed": true,
+      "scope": {
+        "hook": "pending",
+        "card": "pending"
+      },
+      "models": {
+        "u2netp": {
+          "status": "reject",
+          "issues": [
+            "主体误删"
+          ]
+        },
+        "isnet-general-use": {
+          "status": "repair",
+          "issues": [
+            "主体误删"
+          ]
+        },
+        "u2net": {
+          "status": "reject",
+          "issues": [
+            "背景残留"
+          ]
+        },
+        "birefnet-general": {
+          "status": "pass",
+          "issues": []
+        }
+      },
+      "preferred": "birefnet-general",
+      "notes": "",
+      "confirmed": true,
+      "updatedAt": "2026-10-22T11:45:02.380Z"
+    },
+    "13": {
+      "features": [
+        "常规完整主体"
+      ],
+      "featuresConfirmed": true,
+      "scope": {
+        "hook": "pending",
+        "card": "pending"
+      },
+      "models": {
+        "u2netp": {
+          "status": "repair",
+          "issues": []
+        },
+        "isnet-general-use": {
+          "status": "pass",
+          "issues": []
+        },
+        "u2net": {
+          "status": "pass",
+          "issues": []
+        },
+        "birefnet-general": {
+          "status": "pass",
+          "issues": []
+        }
+      },
+      "preferred": "isnet-general-use",
+      "notes": "",
+      "confirmed": true,
+      "updatedAt": "2026-10-22T11:45:24.981Z"
+    },
+    "14": {
+      "features": [
+        "复杂背景",
+        "流苏与细带"
+      ],
+      "featuresConfirmed": true,
+      "scope": {
+        "hook": "pending",
+        "card": "pending"
+      },
+      "models": {
+        "u2netp": {
+          "status": "reject",
+          "issues": []
+        },
+        "isnet-general-use": {
+          "status": "reject",
+          "issues": [
+            "主体误删"
+          ]
+        },
+        "u2net": {
+          "status": "reject",
+          "issues": []
+        },
+        "birefnet-general": {
+          "status": "pass",
+          "issues": []
+        }
+      },
+      "preferred": "birefnet-general",
+      "notes": "",
+      "confirmed": true,
+      "updatedAt": "2026-10-22T11:57:22.675Z"
+    },
+    "15": {
+      "features": [
+        "常规完整主体",
+        "多件物品"
+      ],
+      "featuresConfirmed": true,
+      "scope": {
+        "hook": "pending",
+        "card": "remove"
+      },
+      "models": {
+        "u2netp": {
+          "status": "pass",
+          "issues": []
+        },
+        "isnet-general-use": {
+          "status": "reject",
+          "issues": []
+        },
+        "u2net": {
+          "status": "pass",
+          "issues": []
+        },
+        "birefnet-general": {
+          "status": "pass",
+          "issues": []
+        }
+      },
+      "preferred": "birefnet-general",
+      "notes": "",
+      "confirmed": true,
+      "updatedAt": "2026-10-22T11:57:58.332Z"
+    },
+    "16": {
+      "features": [
+        "流苏与细带",
+        "复杂背景",
+        "多件物品"
+      ],
+      "featuresConfirmed": true,
+      "scope": {
+        "hook": "pending",
+        "card": "remove"
+      },
+      "models": {
+        "u2netp": {
+          "status": "reject",
+          "issues": [
+            "主体误删"
+          ]
+        },
+        "isnet-general-use": {
+          "status": "reject",
+          "issues": [
+            "主体误删"
+          ]
+        },
+        "u2net": {
+          "status": "reject",
+          "issues": [
+            "主体误删"
+          ]
+        },
+        "birefnet-general": {
+          "status": "repair",
+          "issues": [
+            "背景残留"
+          ]
+        }
+      },
+      "preferred": "none",
+      "notes": "用户补充：删掉色卡即可。以BiRefNet候选为返工底稿，去除色卡后重新审核；当前不作为可直接入库结果。",
+      "confirmed": true,
+      "updatedAt": "2026-10-22T12:01:56.834465+00:00"
+    },
+    "01": {
+      "features": [
+        "镂空与间隙",
+        "常规完整主体"
+      ],
+      "featuresConfirmed": true,
+      "scope": {
+        "hook": "pending",
+        "card": "pending"
+      },
+      "models": {
+        "u2netp": {
+          "status": "reject",
+          "issues": [
+            "边缘缺口",
+            "背景残留"
+          ]
+        },
+        "isnet-general-use": {
+          "status": "reject",
+          "issues": [
+            "背景残留"
+          ]
+        },
+        "u2net": {
+          "status": "reject",
+          "issues": []
+        },
+        "birefnet-general": {
+          "status": "repair",
+          "issues": [
+            "边缘缺口"
+          ]
+        }
+      },
+      "preferred": "none",
+      "notes": "右侧缝隙未扣清楚",
+      "confirmed": true,
+      "updatedAt": "2026-10-22T11:39:58.664Z"
+    },
+    "02": {
+      "features": [
+        "镂空与间隙",
+        "常规完整主体"
+      ],
+      "featuresConfirmed": true,
+      "scope": {
+        "hook": "remove",
+        "card": "pending"
+      },
+      "models": {
+        "u2netp": {
+          "status": "repair",
+          "issues": [
+            "辅助物范围待定"
+          ]
+        },
+        "isnet-general-use": {
+          "status": "pending",
+          "issues": []
+        },
+        "u2net": {
+          "status": "pending",
+          "issues": []
+        },
+        "birefnet-general": {
+          "status": "pass",
+          "issues": []
+        }
+      },
+      "preferred": "birefnet-general",
+      "notes": "",
+      "confirmed": true,
+      "updatedAt": "2026-10-22T11:37:04.331Z"
+    },
+    "03": {
+      "features": [
+        "流苏与细带",
+        "镂空与间隙",
+        "常规完整主体"
+      ],
+      "featuresConfirmed": true,
+      "scope": {
+        "hook": "pending",
+        "card": "pending"
+      },
+      "models": {
+        "u2netp": {
+          "status": "repair",
+          "issues": []
+        },
+        "isnet-general-use": {
+          "status": "pending",
+          "issues": []
+        },
+        "u2net": {
+          "status": "pending",
+          "issues": []
+        },
+        "birefnet-general": {
+          "status": "pass",
+          "issues": []
+        }
+      },
+      "preferred": "birefnet-general",
+      "notes": "",
+      "confirmed": true,
+      "updatedAt": "2026-10-22T11:38:40.080Z"
+    },
+    "04": {
+      "features": [
+        "多件物品",
+        "常规完整主体"
+      ],
+      "featuresConfirmed": true,
+      "scope": {
+        "hook": "pending",
+        "card": "pending"
+      },
+      "models": {
+        "u2netp": {
+          "status": "pass",
+          "issues": []
+        },
+        "isnet-general-use": {
+          "status": "pass",
+          "issues": []
+        },
+        "u2net": {
+          "status": "pass",
+          "issues": []
+        },
+        "birefnet-general": {
+          "status": "pass",
+          "issues": []
+        }
+      },
+      "preferred": "u2net",
+      "notes": "",
+      "confirmed": true,
+      "updatedAt": "2026-10-22T11:40:28.420Z"
+    },
+    "05": {
+      "features": [
+        "镂空与间隙",
+        "常规完整主体",
+        "流苏与细带",
+        "主体触边"
+      ],
+      "featuresConfirmed": true,
+      "scope": {
+        "hook": "pending",
+        "card": "pending"
+      },
+      "models": {
+        "u2netp": {
+          "status": "reject",
+          "issues": []
+        },
+        "isnet-general-use": {
+          "status": "reject",
+          "issues": []
+        },
+        "u2net": {
+          "status": "reject",
+          "issues": []
+        },
+        "birefnet-general": {
+          "status": "pass",
+          "issues": []
+        }
+      },
+      "preferred": "birefnet-general",
+      "notes": "",
+      "confirmed": true,
+      "updatedAt": "2026-10-22T11:41:02.347Z"
+    },
+    "06": {
+      "features": [
+        "流苏与细带",
+        "镂空与间隙",
+        "常规完整主体",
+        "主体触边"
+      ],
+      "featuresConfirmed": true,
+      "scope": {
+        "hook": "pending",
+        "card": "pending"
+      },
+      "models": {
+        "u2netp": {
+          "status": "reject",
+          "issues": []
+        },
+        "isnet-general-use": {
+          "status": "reject",
+          "issues": []
+        },
+        "u2net": {
+          "status": "reject",
+          "issues": []
+        },
+        "birefnet-general": {
+          "status": "pass",
+          "issues": []
+        }
+      },
+      "preferred": "birefnet-general",
+      "notes": "",
+      "confirmed": true,
+      "updatedAt": "2026-10-22T11:41:28.131Z"
+    },
+    "07": {
+      "features": [
+        "流苏与细带",
+        "主体触边",
+        "常规完整主体"
+      ],
+      "featuresConfirmed": true,
+      "scope": {
+        "hook": "pending",
+        "card": "pending"
+      },
+      "models": {
+        "u2netp": {
+          "status": "reject",
+          "issues": []
+        },
+        "isnet-general-use": {
+          "status": "reject",
+          "issues": []
+        },
+        "u2net": {
+          "status": "pass",
+          "issues": []
+        },
+        "birefnet-general": {
+          "status": "pass",
+          "issues": []
+        }
+      },
+      "preferred": "u2net",
+      "notes": "",
+      "confirmed": true,
+      "updatedAt": "2026-10-22T11:41:55.865Z"
+    },
+    "08": {
+      "features": [
+        "浅色主体",
+        "复杂背景",
+        "多件物品"
+      ],
+      "featuresConfirmed": true,
+      "scope": {
+        "hook": "pending",
+        "card": "pending"
+      },
+      "models": {
+        "u2netp": {
+          "status": "reject",
+          "issues": []
+        },
+        "isnet-general-use": {
+          "status": "reject",
+          "issues": []
+        },
+        "u2net": {
+          "status": "reject",
+          "issues": []
+        },
+        "birefnet-general": {
+          "status": "repair",
+          "issues": []
+        }
+      },
+      "preferred": "none",
+      "notes": "",
+      "confirmed": true,
+      "updatedAt": "2026-10-22T11:42:36.585Z"
+    },
+    "09": {
+      "features": [
+        "流苏与细带",
+        "复杂背景",
+        "常规完整主体"
+      ],
+      "featuresConfirmed": true,
+      "scope": {
+        "hook": "pending",
+        "card": "pending"
+      },
+      "models": {
+        "u2netp": {
+          "status": "reject",
+          "issues": []
+        },
+        "isnet-general-use": {
+          "status": "repair",
+          "issues": []
+        },
+        "u2net": {
+          "status": "reject",
+          "issues": []
+        },
+        "birefnet-general": {
+          "status": "pass",
+          "issues": []
+        }
+      },
+      "preferred": "birefnet-general",
+      "notes": "",
+      "confirmed": true,
+      "updatedAt": "2026-10-22T11:43:13.108Z"
+    }
+  }
+}

@@ -20,3 +20,12 @@ __pycache__/
 
 # 压缩包
 *.zip
+# 本机任务卡、网页设置及运行缓存
+/data/
+
+# 本机密钥与安装恢复文件
+.env
+.env.*
+*.pem
+*.key
+.venv.cutcut-backup/

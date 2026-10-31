@@ -1,6 +1,7 @@
 """Mask editor and mandatory human review. Tk imports occur only when the window opens."""
 from __future__ import annotations
 import math
+from pathlib import Path
 import sys
 import queue
 import threading
@@ -8,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 import tkinter as tk
 from tkinter import messagebox, ttk
 from PIL import Image, ImageChops, ImageDraw, ImageTk
-from workflow import BatchStore, STATUSES, safe_path
+from workflow import BatchStore, STATUSES, safe_path, rework_note
 from core import load_image, MODEL_LABELS
 
 
@@ -91,8 +92,8 @@ class MaskEditor:
 
 
 class ReviewWindow:
-    def __init__(self,parent,destination):
-        self.store=BatchStore(destination)
+    def __init__(self,parent,destination,source=None):
+        self.store=BatchStore(destination,source)
         self.window=tk.Toplevel(parent);self.window.title('全部图片人工审核与修整')
         self.window.geometry('1280x900');self.window.minsize(1000,740)
         self.window.protocol('WM_DELETE_WINDOW',self.close)
@@ -100,7 +101,7 @@ class ReviewWindow:
         self.row=None;self.images={};self.photos=[];self.engine=None;self.busy=False;self.dirty=False
         self.zoom=1;self.center=(0,0);self.points=[];self.render_job=None;self.wheel_job=None;self.wheel_amount=0;self.wheel_anchor=None;self.space_pan=False;self.dragging_pan=False
         self.filter=tk.StringVar(value='待审核/编辑中/失败');self.tool=tk.StringVar(value='移动')
-        self.shape=tk.StringVar(value='笔刷');self.radius=tk.StringVar(value='10');self.note=tk.StringVar()
+        self.shape=tk.StringVar(value='笔刷');self.radius=tk.StringVar(value='10');self.note=tk.StringVar();self.naming=tk.StringVar(value='保留原文件名');self.custom_name=tk.StringVar()
         self.detail=tk.StringVar(value='生成候选图后，所有图片都需要人工审核。')
         self.state=tk.StringVar();self.position=tk.StringVar()
         outer=ttk.Frame(self.window,padding=12);outer.pack(fill='both',expand=True)
@@ -146,7 +147,12 @@ class ReviewWindow:
         ttk.Label(outer,textvariable=self.detail,wraplength=950).pack(anchor='w')
         ttk.Label(outer,text='套索：按住拖出轮廓，松手应用。⌘+滚动缩放；双指滚动平移；⌘+滚动缓慢缩放；方向键平移；空格+拖动临时移动。右键取消选区。',foreground='#687385').pack(anchor='w',pady=5)
         remarks=ttk.Frame(outer);remarks.pack(fill='x',pady=5)
-        ttk.Label(remarks,text='人工原因/备注（选填）').pack(side='left');ttk.Entry(remarks,textvariable=self.note).pack(side='left',fill='x',expand=True,padx=8)
+        ttk.Label(remarks,text='返工备注（仅写入返工文件名）').pack(side='left');ttk.Entry(remarks,textvariable=self.note).pack(side='left',fill='x',expand=True,padx=8)
+        naming=ttk.Frame(outer);naming.pack(fill='x',pady=3)
+        ttk.Label(naming,text='导出命名').pack(side='left')
+        ttk.Combobox(naming,textvariable=self.naming,values=['保留原文件名','自定义名称'],state='readonly',width=16).pack(side='left',padx=8)
+        ttk.Entry(naming,textvariable=self.custom_name).pack(side='left',fill='x',expand=True)
+        ttk.Label(naming,text='自定义时填写名称，无需 .jpg').pack(side='left',padx=6)
         decisions=ttk.Frame(outer);decisions.pack(fill='x')
         self.approve=ttk.Button(decisions,text='确认无问题 → 导出到白底图',command=lambda:self.decide('approved'));self.approve.pack(side='left',padx=4)
         self.redo=ttk.Button(decisions,text='有问题 → 导出到待重制',command=lambda:self.decide('redo'));self.redo.pack(side='left',padx=4)
@@ -160,8 +166,8 @@ class ReviewWindow:
         ttk.Label(retrybar,text='BiRefNet 首次需要下载；换模型重试会清空本图编辑。',foreground='#687385').pack(side='left')
         bulkbar=ttk.Frame(outer);bulkbar.pack(fill='x',pady=4)
         self.batch_retrying=False;self.retry_cancel=threading.Event()
-        self.bulk_button=ttk.Button(bulkbar,text='整批重抠（仅未通过）',command=self.retry_batch);self.bulk_button.pack(side='left',padx=4)
-        self.bulk_stop=ttk.Button(bulkbar,text='停止整批重抠',command=self.retry_cancel.set,state='disabled');self.bulk_stop.pack(side='left',padx=4)
+        self.bulk_button=ttk.Button(bulkbar,text='整批重抠（仅未通过）',command=self.retry_batch);self.bulk_button.pack_forget()
+        self.bulk_stop=ttk.Button(bulkbar,text='停止整批重抠',command=self.retry_cancel.set,state='disabled');self.bulk_stop.pack_forget()
         ttk.Label(outer,text='关闭或切换图片前自动保存编辑。确认后再修改，会撤销旧确认和工具生成的旧导出；手工改过的导出不会覆盖。',foreground='#687385',wraplength=950).pack(anchor='w',pady=5)
         self.window.bind('<Escape>',lambda e:self.cancel_selection())
         for key,dx,dy in [('Left',-40,0),('Right',40,0),('Up',0,-40),('Down',0,40)]:
@@ -225,7 +231,7 @@ class ReviewWindow:
         if not self.save():return
         row=self.store.get(self.visible[selected[0]]['source'])
         self.row=row;self.generation+=1;self.images={};self.engine=None;self.dirty=False;self.points=[]
-        self.note.set(row.get('human',''))
+        self.note.set(rework_note(row));self.naming.set('自定义名称' if row.get('export_naming')=='custom' else '保留原文件名');self.custom_name.set(Path(row.get('export_name') or '').stem if row.get('export_naming')=='custom' else '')
         self.retry_model.set(next((label for label,model in MODEL_LABELS.items() if model==row['options']['model']),next(iter(MODEL_LABELS))))
         self.state.set('正在载入…');self.detail.set(self.routing_text(row)+'自动提示：'+(row.get('automatic') or '未触发规则，仍需人工确认。')+('；错误：'+row['error'] if row.get('error') else ''))
         self.schedule_render()
@@ -267,7 +273,7 @@ class ReviewWindow:
                     ExportPreview(self.window,value)
                 elif kind in {'decide','retry'}:
                     self.row=value
-                    if kind=='retry':self.engine=None;self.dirty=False;self.note.set(value.get('human',''))
+                    if kind=='retry':self.engine=None;self.dirty=False;self.note.set(rework_note(value))
                     self.state.set(STATUSES[value['status']]+' · '+value['source']);self.refresh(advance=kind=='decide')
                 elif kind=='bulk_retry':
                     self.engine=None;self.dirty=False;self.row=None;self.filter.set('待审核/编辑中/失败');self.refresh()
@@ -364,10 +370,10 @@ class ReviewWindow:
 
     def save(self):
         if not self.row or not self.engine or self.busy:return not self.busy
-        if not self.dirty and self.note.get()==self.row.get('human',''):return True
+        if not self.dirty:return True
         try:
             if not self.ensure_editing():return False
-            self.row=self.store.save_edit(self.row['source'],self.row['revision'],self.engine.mask,self.note.get())
+            self.row=self.store.save_edit(self.row['source'],self.row['revision'],self.engine.mask,'')
             self.dirty=False;return True
         except Exception as exc:messagebox.showerror('保存失败','请不要关闭窗口；'+str(exc),parent=self.window);return False
 
@@ -384,8 +390,8 @@ class ReviewWindow:
     def decide(self,decision):
         if self.busy or not self.row or not self.save():return
         if self.points:messagebox.showinfo('选区尚未完成','请先完成或取消当前选区，再确认。',parent=self.window);return
-        row=dict(self.row);human=self.note.get();self.state.set('正在验证并导出…')
-        self.submit('decide',lambda:self.store.decide(row['source'],row['revision'],decision,human))
+        row=dict(self.row);human=self.note.get() if decision=='redo' else '';naming='custom' if self.naming.get()=='自定义名称' else 'original';custom=self.custom_name.get();self.state.set('正在验证并导出…')
+        self.submit('decide',lambda:self.store.decide(row['source'],row['revision'],decision,human,naming,custom))
 
     def retry_batch(self):
         if self.busy or not self.discard_selection() or not self.save():return

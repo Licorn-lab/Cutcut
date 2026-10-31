@@ -1,4 +1,3 @@
-import csv
 import json
 import os
 import sys
@@ -35,8 +34,8 @@ class WorkflowTests(unittest.TestCase):
         self.job();store=BatchStore(self.output);row=self.row()
         row=store.decide(row['source'],row['revision'],'redo','')
         self.assertEqual(row['status'],'redo');self.assertTrue((self.output/row['export']).exists())
-        with (self.output/'待重制/重制原因.csv').open(encoding='utf-8-sig',newline='') as f:
-            self.assertEqual(list(csv.reader(f))[1][2],'')
+        self.assertEqual(Path(row['export']).name,'样图.jpg')
+        self.assertFalse(list(self.output.rglob('*.csv')))
     def test_single_model_override_survives_resume_and_source_change(self):
         self.job();store=BatchStore(self.output);row=self.row();base=Options()
         selected=Options(model='birefnet-general')
@@ -50,36 +49,36 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(seen,['birefnet-general'])
         self.job(options=Options(model='u2netp'));self.assertEqual(self.row()['options']['model'],'u2netp')
         self.assertFalse(self.row().get('override_base'))
-    def test_export_name_keeps_input_stem_plus_w(self):
+    def test_export_name_keeps_input_stem(self):
         self.photo('照片 1479.jpg');self.photo('DSC_6952.png');self.job();store=BatchStore(self.output)
-        for key,expected in [('照片 1479.jpg','照片 1479w.jpg'),('DSC_6952.png','DSC_6952w.jpg')]:
+        for key,expected in [('照片 1479.jpg','照片 1479.jpg'),('DSC_6952.png','DSC_6952.jpg')]:
             row=store.get(key);row=store.decide(key,row['revision'],'approved','')
             self.assertEqual(Path(row['export']).name,expected)
             row=store.decide(key,row['revision'],'redo','');self.assertEqual(Path(row['export']).name,expected)
-    def test_same_stem_different_extensions_block_without_overwrite(self):
+    def test_same_stem_different_extensions_get_unique_names(self):
         self.photo('同名.jpg');self.photo('同名.png');self.job();store=BatchStore(self.output)
+        exported=[]
         for key in ['同名.jpg','同名.png']:
-            row=store.get(key)
-            with self.assertRaisesRegex(ValueError,'命名冲突'):store.decide(key,row['revision'],'approved','')
-            self.assertEqual(store.get(key)['status'],'pending')
-        self.assertFalse(list(self.output.rglob('同名w.jpg')))
+            row=store.get(key);row=store.decide(key,row['revision'],'approved','');exported.append(row['export'])
+            self.assertEqual(store.decide(key,row['revision'],'approved','')['export'],row['export'])
+        self.assertEqual({Path(x).name for x in exported},{'同名.jpg','同名_2.jpg'})
     def test_same_stem_in_different_folders_is_allowed(self):
         self.photo('甲/a.jpg');self.photo('乙/a.png');self.job();store=BatchStore(self.output)
         for key in ['甲/a.jpg','乙/a.png']:
             row=store.get(key);row=store.decide(key,row['revision'],'approved','')
-            self.assertEqual(Path(row['export']).name,'aw.jpg');self.assertTrue((self.output/row['export']).exists())
+            self.assertEqual(Path(row['export']).name,'a.jpg');self.assertTrue((self.output/row['export']).exists())
     def test_existing_owned_old_name_changes_on_reconfirmation(self):
         self.job();store=BatchStore(self.output);row=self.approve();target=self.output/row['export']
         old=target.with_name('样图.png.white.jpg');target.rename(old)
         row['export']=old.relative_to(self.output).as_posix()
         with store.locked() as c:store._put(c,row)
         row=store.decide(row['source'],row['revision'],'approved','')
-        self.assertFalse(old.exists());self.assertEqual(Path(row['export']).name,'样图w.jpg')
+        self.assertFalse(old.exists());self.assertEqual(Path(row['export']).name,'样图.jpg')
     def test_every_image_pending_and_nothing_exported(self):
         original=digest(self.source/'子目录/样图.png');result=self.job();row=self.row()
         self.assertEqual(row['status'],'pending');self.assertEqual(result['auto_pass'],0)
         self.assertEqual({p.name for p in self.output.iterdir()},{'白底图','待重制'})
-        self.assertEqual([p.name for p in self.output.rglob('*') if p.is_file()],['重制原因.csv'])
+        self.assertEqual([p.name for p in self.output.rglob('*') if p.is_file()],[])
         self.assertEqual(digest(self.source/'子目录/样图.png'),original)
     def test_manual_approval_exports_full_size_white_jpeg(self):
         self.job();row=self.approve();self.assertEqual(row['status'],'approved')
@@ -89,11 +88,12 @@ class WorkflowTests(unittest.TestCase):
         self.job();store=BatchStore(self.output);row=self.row()
         row=store.decide(row['source'],row['revision'],'redo','右下角缺边')
         redo=self.output/row['export'];self.assertTrue(redo.exists())
-        with (self.output/'待重制/重制原因.csv').open(encoding='utf-8-sig',newline='') as f:rows=list(csv.reader(f))
-        self.assertEqual(rows[1][2],'右下角缺边')
+        self.assertEqual(redo.name,'样图_返工-右下角缺边.jpg')
+        self.assertNotIn('human',row)
         row=store.decide(row['source'],row['revision'],'approved','已确认')
         self.assertFalse(redo.exists());self.assertTrue((self.output/row['export']).exists())
-        with (self.output/'待重制/重制原因.csv').open(encoding='utf-8-sig',newline='') as f:self.assertEqual(len(list(csv.reader(f))),1)
+        self.assertFalse(list(self.output.rglob('*.csv')))
+        self.assertEqual(Path(row['export']).name,'样图.jpg')
     def test_edit_invalidates_approval_saves_lossless_mask_and_reopens(self):
         self.job();row=self.approve();export=self.output/row['export'];store=BatchStore(self.output)
         row=store.begin_edit(row['source'],row['revision']);self.assertEqual(row['status'],'editing');self.assertFalse(export.exists())
@@ -102,7 +102,7 @@ class WorkflowTests(unittest.TestCase):
         reopened=BatchStore(self.output);saved=reopened.get(row['source'])
         self.assertEqual(reopened.load_mask(saved).getpixel((30,20)),0)
         self.assertEqual(reopened.load_mask(saved,base=True).getpixel((30,20)),255)
-        self.assertEqual(saved['human'],'修改一处');self.assertEqual(saved['status'],'editing')
+        self.assertNotIn('human',saved);self.assertEqual(saved['status'],'editing')
         self.assertEqual(len(list(store.masks.glob('*.png'))),2)
     def test_original_change_blocks_old_approval_and_rerun_invalidates_it(self):
         self.job();row=self.approve();old=self.output/row['export'];self.photo('子目录/样图.png','blue')
@@ -150,10 +150,9 @@ class WorkflowTests(unittest.TestCase):
         (self.source/'坏图.jpg').write_bytes(b'broken');self.job();store=BatchStore(self.output);row=store.get('坏图.jpg')
         self.assertEqual(row['status'],'failed')
         with self.assertRaisesRegex(ValueError,'没有候选'):store.decide(row['source'],row['revision'],'approved','')
-        row=store.decide(row['source'],row['revision'],'redo','原图损坏');self.assertIsNone(row['export'])
-        self.assertEqual(self.job()['skipped'],2)
-        with (self.output/'待重制/重制原因.csv').open(encoding='utf-8-sig',newline='') as f:rows=list(csv.reader(f))
-        self.assertEqual(rows[1][3],'');self.assertIn('Error',rows[1][4])
+        with self.assertRaisesRegex(ValueError,'无法解码'):store.decide(row['source'],row['revision'],'redo','原图损坏')
+        self.assertEqual(store.get(row['source'])['status'],'failed')
+        self.assertFalse(list(self.output.rglob('*.csv')))
     def test_stop_and_resume(self):
         self.photo('第二张.png');event=threading.Event()
         result=self.job(cancel=event,emit=lambda kind,value:event.set() if kind=='progress' else None)
@@ -175,7 +174,7 @@ class WorkflowTests(unittest.TestCase):
         self.photo('第二张.png');import workflow
         original_digest=workflow.digest
         def sometimes(path):
-            if Path(path)==self.source/'子目录/样图.png':raise PermissionError('no read permission')
+            if Path(path).resolve()==(self.source/'子目录/样图.png').resolve():raise PermissionError('no read permission')
             return original_digest(path)
         with patch('workflow.digest',sometimes):result=self.job()
         self.assertEqual((result['failed'],result['success']),(1,1));self.assertEqual(self.row()['status'],'failed')
@@ -204,16 +203,30 @@ class WorkflowTests(unittest.TestCase):
     def test_startup_import_does_not_load_rembg(self):
         import subprocess
         path=str(Path(__file__).resolve().parents[1])
-        result=subprocess.run([sys.executable,'-c',"import sys;sys.path.insert(0,"+repr(path)+");import app;assert 'rembg' not in sys.modules;assert 'editor' not in sys.modules"],capture_output=True,text=True)
+        result=subprocess.run([sys.executable,'-c',"import sys;sys.path.insert(0,"+repr(path)+");import web_server;assert 'rembg' not in sys.modules;assert 'editor' not in sys.modules"],capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)
 
-    def test_old_output_rejected_without_deletion(self):
+    def test_existing_output_allowed_without_deletion(self):
         self.output.mkdir();old=self.output/'待人工复核';old.mkdir();(old/'old.jpg').write_bytes(b'old')
-        with self.assertRaisesRegex(ValueError,'新的空'):self.job()
+        self.job()
         self.assertEqual((old/'old.jpg').read_bytes(),b'old')
-    def test_different_source_rejected(self):
-        self.job();other=self.root/'other';other.mkdir()
-        with self.assertRaisesRegex(ValueError,'另一批'):BatchStore(self.output,other)
+    def test_shared_output_batches_are_isolated_and_names_reserved(self):
+        self.job();first=BatchStore(self.output,self.source);row=self.approve();first_export=self.output/row['export'];before=digest(first_export)
+        other=self.root/'other';other.mkdir();(other/'子目录').mkdir()
+        Image.new('RGB',(120,80),'blue').save(other/'子目录/样图.png')
+        run_batch(other,self.output,Options(),session_factory=lambda _:object(),remover=self.remover)
+        second=BatchStore(self.output,other);row=second.get('子目录/样图.png')
+        row=second.decide(row['source'],row['revision'],'redo','second batch')
+        row=second.decide(row['source'],row['revision'],'approved','second batch')
+        self.assertEqual(Path(row['export']).name,'样图_2.jpg');self.assertEqual(digest(first_export),before)
+        self.assertNotIn('human',first.get('子目录/样图.png'))
+        self.assertNotIn('human',second.get('子目录/样图.png'))
+        self.assertFalse(list(self.output.rglob('*.csv')))
+        row=second.begin_edit(row['source'],row['revision']);self.assertTrue(first_export.exists())
+        row=second.decide(row['source'],row['revision'],'approved','edited');self.assertEqual(Path(row['export']).name,'样图_2.jpg')
+        self.assertEqual(BatchStore(self.output,self.source).cache,first.cache)
+        self.assertEqual(BatchStore(self.output,other).cache,second.cache)
+
     def test_paths_do_not_escape_or_follow_external_symlink(self):
         for path in ['../x',str(self.root/'x'),'.']:
             with self.assertRaises(ValueError):safe_path(self.source,path)

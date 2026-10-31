@@ -3,7 +3,7 @@ set -euo pipefail
 APP_ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$APP_ROOT"
 if [ ! -x "$APP_ROOT/.venv/bin/python" ]; then
-  printf '未找到原工具运行环境，请先运行安装.command。\n'
+  printf '未找到原工具运行环境，请先打开“安装 CutCut”。\n'
   read -r _ || true
   exit 1
 fi
