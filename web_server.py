@@ -75,7 +75,7 @@ class Workspace:
     def __init__(self):
         self.edit_session = None
         self.lock = threading.RLock()
-        self.process = None;self.external = None
+        self.process = None
         self.job = {'busy':False, 'message':'准备就绪', 'progress':0, 'total':0, 'error':''}
         self.source = None;self.destination = None;self.paths = {};self.store = None
         self.settings = {}
@@ -88,7 +88,6 @@ class Workspace:
 
     def idle(self):
         if self.job['busy']:raise ValueError('任务正在运行，请停止并等待完成')
-        if self.external and self.external.poll() is None:raise ValueError('桌面修整窗口仍在运行，请先关闭')
 
     def open(self, data):
         self.idle()
@@ -161,7 +160,6 @@ class Workspace:
         return blocked
 
     def reviewable(self, key, row, blocked=None, allow_unmasked=False):
-        if self.external and self.external.poll() is None:return False
         if not row or row['status']=='processing' or (not row.get('mask') and not allow_unmasked):return False
         return key not in (self.review_blocked() if blocked is None else blocked)
 
@@ -312,6 +310,7 @@ def handler(workspace, token):
                 length = int(self.headers.get('Content-Length','0'))
                 if not 0 < length <= 65536:raise ValueError('请求大小无效')
                 data = json.loads(self.rfile.read(length));route = urlparse(self.path).path
+                if route == '/api/desktop':return self.send({'error':'接口不存在'},404)
                 with workspace.lock:
                     if route == '/api/stop':
                         if workspace.process:workspace.process.terminate()
@@ -346,9 +345,6 @@ def handler(workspace, token):
                         if pending and mode == 'resume':options = Options(**pending['options'])
                         workspace.edit_session=None
                         workspace.start({'action':'batch','options':vars(options),'mode':mode})
-                    elif route == '/api/desktop':
-                        if not workspace.store:raise ValueError('请先打开批次')
-                        workspace.external = subprocess.Popen([sys.executable,str(Path(__file__).resolve()),'--desktop',str(workspace.destination),str(workspace.source)])
                     else:
                         path = workspace.path(data['id']);key = path.relative_to(workspace.source).as_posix()
                         if route == '/api/card':raise ValueError('已取消独立备注保存；请在标记返工时填写文件名备注')
@@ -396,8 +392,4 @@ if __name__ == '__main__':
     if sys.argv[1:] == ['--worker']:
         try:worker(json.load(sys.stdin))
         except Exception as exc:print(str(exc),flush=True);sys.exit(1)
-    elif sys.argv[1:2] == ['--desktop']:
-        import tkinter as tk
-        from editor import ReviewWindow
-        root = tk.Tk();root.withdraw();window = ReviewWindow(root,sys.argv[2],sys.argv[3] if len(sys.argv)>3 else None);root.wait_window(window.window);root.destroy()
     else:main()

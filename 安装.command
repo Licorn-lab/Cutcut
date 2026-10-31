@@ -41,7 +41,7 @@ if ! "$APP_ROOT/.venv/bin/python" -m pip install --only-binary=:all: 'pillow-hei
   printf '可选 HEIC 组件未安装。JPG/PNG 等仍可使用；HEIC 请先导出为 JPG。\n'
 fi
 "$APP_ROOT/.venv/bin/python" -c 'import rembg,onnxruntime,PIL,tkinter; print("核心组件检查通过")'
-chmod u+x "$APP_ROOT/启动.command" "$APP_ROOT/安装.command"
-printf '\n安装完成！今后双击 启动.command 即可。\n'
+chmod u+x "$APP_ROOT/启动CutCut网页.command" "$APP_ROOT/安装.command"
+printf '\n安装完成！今后双击 启动CutCut网页.command 即可。\n'
 printf '首次处理会另外下载模型；下载完成后，同一模型可以离线使用。\n'
 pause_end

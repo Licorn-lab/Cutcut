@@ -58,7 +58,7 @@ function selectedBlocked(){return !detail?.row?.mask||detail.row.status==='proce
 function updateActionControls(){
  const local=editBusy||actionBusy||drawing||editPoints.length>0;
  const batchBlocked=!!state?.job.busy||local;
- for(const id of ['open','start','restart','restartScope','retry','desktop'])$(id).disabled=batchBlocked||(['retry'].includes(id)&&!selected)||(['start','restart','restartScope','desktop'].includes(id)&&!state?.count);
+ for(const id of ['open','start','restart','restartScope','retry'])$(id).disabled=batchBlocked||(['retry'].includes(id)&&!selected)||(['start','restart','restartScope'].includes(id)&&!state?.count);
  $('approve').disabled=local||selectedBlocked()||!!cropDraft||!!geometryDraft;
  // Failed candidates can still be exported for rework once the batch is idle.
  const failedRework=detail?.row?.status==='failed'&&!state?.job.busy;
@@ -138,7 +138,7 @@ for(const [id,decision] of [['approve','approved'],['redo','redo']])$(id).onclic
  await alignEditorQueue();
  toast(decision==='approved'?(next?'已确认并导出，已切换到下一张待审核图片':'已确认并导出，当前筛选下没有其他待审核图片'):'返工图片已导出，备注已写入文件名');
 });
-$('desktop').onclick=()=>action(()=>api('/api/desktop',{}));$('filter').onchange=()=>{offset=0;refresh()};$('prev').onclick=()=>{offset=Math.max(0,offset-40);refresh()};$('next').onclick=()=>{offset+=40;refresh()};
+$('filter').onchange=()=>{offset=0;refresh()};$('prev').onclick=()=>{offset=Math.max(0,offset-40);refresh()};$('next').onclick=()=>{offset+=40;refresh()};
 function transform(){for(const id of ['original','result']){const im=$(id),viewport=im.parentElement;if(im.complete&&im.naturalWidth){const ratio=Math.min(viewport.clientWidth/im.naturalWidth,viewport.clientHeight/im.naturalHeight);im.style.width=(im.naturalWidth*ratio)+'px';im.style.height=(im.naturalHeight*ratio)+'px';}im.style.transform=`translate(${view.x}px,${view.y}px) scale(${view.scale})`;}if(typeof drawSelection==='function')drawSelection();if(typeof renderExtras==='function')renderExtras();if(typeof positionGeometryPreview==='function')positionGeometryPreview();if(typeof renderGeometryGrid==='function')renderGeometryGrid()}
 function zoom(f){view.scale=Math.max(.25,Math.min(12,view.scale*f));transform()}
 $('zoomin').onclick=()=>zoom(1.25);$('zoomout').onclick=()=>zoom(.8);$('fit').onclick=()=>{view={scale:1,x:0,y:0};transform()};

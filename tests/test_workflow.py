@@ -203,7 +203,7 @@ class WorkflowTests(unittest.TestCase):
     def test_startup_import_does_not_load_rembg(self):
         import subprocess
         path=str(Path(__file__).resolve().parents[1])
-        result=subprocess.run([sys.executable,'-c',"import sys;sys.path.insert(0,"+repr(path)+");import app;assert 'rembg' not in sys.modules;assert 'editor' not in sys.modules"],capture_output=True,text=True)
+        result=subprocess.run([sys.executable,'-c',"import sys;sys.path.insert(0,"+repr(path)+");import web_server;assert 'rembg' not in sys.modules;assert 'editor' not in sys.modules"],capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)
 
     def test_existing_output_allowed_without_deletion(self):

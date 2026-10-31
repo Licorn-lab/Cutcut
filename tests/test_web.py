@@ -41,6 +41,11 @@ class WebTests(unittest.TestCase):
     def generate(self):
         def remove(im,session,opt):im=im.copy();im.putalpha(Image.new('L',im.size,255));return im
         return run_batch(self.source,self.root/'out',Options(model='u2net'),session_factory=lambda _:object(),remover=remove)
+    def test_desktop_endpoint_removed(self):
+        code, result = self.request('/api/desktop', {})
+        self.assertEqual(code, 404)
+        self.assertEqual(result['error'], '接口不存在')
+
     def test_export_feedback_actual_collision_name_and_safe_reveal(self):
         self.generate();row=self.ws.store.get('sample.png')
         foreign=self.root/'out/白底图/sample.jpg';foreign.write_bytes(b'other image')
@@ -371,7 +376,7 @@ class WebTests(unittest.TestCase):
             self.assertEqual(self.request(f'/api/crop-suggest?id={self.ident}&revision={row["revision"]}')[0],200)
             code,value=self.request('/api/crop',{'id':self.ident,'revision':row['revision'],'box':[5,5,55,75],'space':'adjusted'})
             self.assertEqual(code,200);row=value['row']
-            for route in ('/api/retry','/api/start','/api/open','/api/desktop'):
+            for route in ('/api/retry','/api/start','/api/open'):
                 self.assertEqual(self.request(route,{'id':self.ident,'revision':row['revision'],'model':'u2net'})[0],400)
             self.assertEqual(self.request('/api/decide',{'id':self.ident,'revision':row['revision'],'decision':'approved'})[0],200)
             revision=self.ws.store.get('sample.png')['revision']
